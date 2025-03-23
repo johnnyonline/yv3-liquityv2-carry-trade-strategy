@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.18;
 
-import {Strategy, ERC20} from "./Strategy.sol";
+import {LiquityV2CarryTradeStrategy as Strategy, ERC20} from "./Strategy.sol";
 import {IStrategyInterface} from "./interfaces/IStrategyInterface.sol";
 
 contract StrategyFactory {
@@ -31,15 +31,22 @@ contract StrategyFactory {
     /**
      * @notice Deploy a new Strategy.
      * @param _asset The underlying asset for the strategy to use.
+        * @param _name The name of the strategy.
+        * @param _borrowToken The token to borrow.
+        * @param _lenderVault The vault to lend to.
+        * @param _addressesRegistry The address of Liquity's addressesRegistry.
      * @return . The address of the new strategy.
      */
     function newStrategy(
         address _asset,
-        string calldata _name
+        string calldata _name,
+        address _borrowToken,
+        address _lenderVault,
+        address _addressesRegistry
     ) external virtual returns (address) {
         // tokenized strategies available setters.
         IStrategyInterface _newStrategy = IStrategyInterface(
-            address(new Strategy(_asset, _name))
+            address(new Strategy(_asset, _name, _borrowToken, _lenderVault, _addressesRegistry))
         );
 
         _newStrategy.setPerformanceFeeRecipient(performanceFeeRecipient);
