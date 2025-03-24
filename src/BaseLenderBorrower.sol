@@ -51,12 +51,9 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
      * @param _name The name of the strategy.
      * @param _borrowToken The address of the borrow token.
      */
-    constructor(
-        address _asset,
-        string memory _name,
-        address _borrowToken,
-        address _lenderVault
-    ) BaseHealthCheck(_asset, _name) {
+    constructor(address _asset, string memory _name, address _borrowToken, address _lenderVault)
+        BaseHealthCheck(_asset, _name)
+    {
         borrowToken = _borrowToken;
 
         // Set default variables
@@ -91,14 +88,9 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
      * @param _warningLTVMultiplier New warning LTV multiplier
      * @dev Target must be less than warning, warning must be <= 9000, target cannot be 0
      */
-    function setLtvMultipliers(
-        uint16 _targetLTVMultiplier,
-        uint16 _warningLTVMultiplier
-    ) external onlyManagement {
+    function setLtvMultipliers(uint16 _targetLTVMultiplier, uint16 _warningLTVMultiplier) external onlyManagement {
         require(
-            _warningLTVMultiplier <= 9_000 &&
-                _targetLTVMultiplier < _warningLTVMultiplier &&
-                _targetLTVMultiplier != 0,
+            _warningLTVMultiplier <= 9_000 && _targetLTVMultiplier < _warningLTVMultiplier && _targetLTVMultiplier != 0,
             "invalid LTV"
         );
         targetLTVMultiplier = _targetLTVMultiplier;
@@ -117,9 +109,7 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
      * @notice Set the maximum gas price for tending
      * @param _maxGasPriceToTend New maximum gas price
      */
-    function setMaxGasPriceToTend(
-        uint256 _maxGasPriceToTend
-    ) external onlyManagement {
+    function setMaxGasPriceToTend(uint256 _maxGasPriceToTend) external onlyManagement {
         maxGasPriceToTend = _maxGasPriceToTend;
     }
 
@@ -198,26 +188,16 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
      * @return _totalAssets A trusted and accurate account for the total
      * amount of 'asset' the strategy currently holds including idle funds.
      */
-    function _harvestAndReport()
-        internal
-        virtual
-        override
-        returns (uint256 _totalAssets)
-    {
+    function _harvestAndReport() internal virtual override returns (uint256 _totalAssets) {
         /// 1. claim rewards, 2. even borrowToken deposits and borrows 3. sell remainder of rewards to asset.
         _claimAndSellRewards();
 
         /// Leverage all the asset we have or up to the supply cap.
         /// We want check our leverage even if balance of asset is 0.
-        _leveragePosition(
-            Math.min(balanceOfAsset(), availableDepositLimit(address(this)))
-        );
+        _leveragePosition(Math.min(balanceOfAsset(), availableDepositLimit(address(this))));
 
         /// Base token owed should be 0 here but we count it just in case
-        _totalAssets =
-            balanceOfAsset() +
-            balanceOfCollateral() -
-            _borrowTokenOwedInAsset();
+        _totalAssets = balanceOfAsset() + balanceOfCollateral() - _borrowTokenOwedInAsset();
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -257,9 +237,7 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
         }
 
         /// Else we need to either adjust LTV up or down.
-        _leveragePosition(
-            Math.min(_totalIdle, availableDepositLimit(address(this)))
-        );
+        _leveragePosition(Math.min(_totalIdle, availableDepositLimit(address(this))));
     }
 
     /**
@@ -279,9 +257,7 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
         /// 2. costs are acceptable
         uint256 collateralInUsd = _toUsd(balanceOfCollateral(), address(asset));
         uint256 debtInUsd = _toUsd(balanceOfDebt(), borrowToken);
-        uint256 currentLTV = collateralInUsd > 0
-            ? (debtInUsd * WAD) / collateralInUsd
-            : 0;
+        uint256 currentLTV = collateralInUsd > 0 ? (debtInUsd * WAD) / collateralInUsd : 0;
 
         /// Check if we are over our warning LTV
         if (currentLTV > _getWarningLTV()) {
@@ -308,19 +284,14 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
             }
 
             /// Convert to borrowToken
-            uint256 amountToBorrowBT = Math.min(
-                _fromUsd(amountToBorrowUsd, borrowToken),
-                Math.min(_lenderMaxDeposit(), _maxBorrowAmount())
-            );
+            uint256 amountToBorrowBT =
+                Math.min(_fromUsd(amountToBorrowUsd, borrowToken), Math.min(_lenderMaxDeposit(), _maxBorrowAmount()));
 
             if (amountToBorrowBT == 0) return false;
 
             /// We want to make sure that the reward apr > borrow apr so we don't report a loss
             /// Borrowing will cause the borrow apr to go up and the rewards apr to go down
-            if (
-                getNetBorrowApr(amountToBorrowBT) <
-                getNetRewardApr(amountToBorrowBT)
-            ) {
+            if (getNetBorrowApr(amountToBorrowBT) < getNetRewardApr(amountToBorrowBT)) {
                 /// Borrowing costs are healthy and WE NEED TO TAKE ON MORE DEBT
                 return _isBaseFeeAcceptable();
             }
@@ -350,29 +321,18 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
      * @param . The address that is depositing into the strategy.
      * @return . The available amount the `_owner` can deposit in terms of `asset`
      */
-    function availableDepositLimit(
-        address /*_owner*/
-    ) public view virtual override returns (uint256) {
+    function availableDepositLimit(address /*_owner*/ ) public view virtual override returns (uint256) {
         /// We need to be able to both supply and withdraw on deposits.
         if (_isSupplyPaused() || _isBorrowPaused()) return 0;
 
         uint256 currentAssets = TokenizedStrategy.totalAssets();
-        uint256 limit = depositLimit > currentAssets
-            ? depositLimit - currentAssets
-            : 0;
+        uint256 limit = depositLimit > currentAssets ? depositLimit - currentAssets : 0;
 
         uint256 maxDeposit = Math.min(_maxCollateralDeposit(), limit);
         uint256 maxBorrow = Math.min(_lenderMaxDeposit(), _maxBorrowAmount());
 
         // Either the max supply or the max we could borrow / targetLTV.
-        return
-            Math.min(
-                maxDeposit,
-                _fromUsd(
-                    (_toUsd(maxBorrow, borrowToken) * WAD) / _getTargetLTV(),
-                    address(asset)
-                )
-            );
+        return Math.min(maxDeposit, _fromUsd((_toUsd(maxBorrow, borrowToken) * WAD) / _getTargetLTV(), address(asset)));
     }
 
     /**
@@ -393,9 +353,7 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
      * @param . The address that is withdrawing from the strategy.
      * @return . The available amount that can be withdrawn in terms of `asset`
      */
-    function availableWithdrawLimit(
-        address /*_owner*/
-    ) public view virtual override returns (uint256) {
+    function availableWithdrawLimit(address /*_owner*/ ) public view virtual override returns (uint256) {
         /// Default liquidity is the balance of collateral + 1 for rounding.
         uint256 liquidity = balanceOfCollateral() + 1;
         uint256 lenderLiquidity = _lenderMaxWithdraw();
@@ -404,10 +362,7 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
         if (lenderLiquidity < balanceOfLentAssets()) {
             /// Adjust liquidity based on withdrawing the full amount of debt.
             unchecked {
-                liquidity = ((_fromUsd(
-                    _toUsd(lenderLiquidity, borrowToken),
-                    address(asset)
-                ) * WAD) / _getTargetLTV());
+                liquidity = ((_fromUsd(_toUsd(lenderLiquidity, borrowToken), address(asset)) * WAD) / _getTargetLTV());
             }
         }
 
@@ -432,9 +387,7 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
         uint256 debtInUsd = _toUsd(balanceOfDebt(), borrowToken);
 
         /// LTV numbers are always in WAD
-        uint256 currentLTV = collateralInUsd > 0
-            ? (debtInUsd * WAD) / collateralInUsd
-            : 0;
+        uint256 currentLTV = collateralInUsd > 0 ? (debtInUsd * WAD) / collateralInUsd : 0;
         uint256 targetLTV = _getTargetLTV(); // 70% under default liquidation Threshold
 
         /// decide in which range we are and act accordingly:
@@ -453,17 +406,12 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
             }
 
             /// convert to borrowToken
-            uint256 amountToBorrowBT = Math.min(
-                _fromUsd(amountToBorrowUsd, borrowToken),
-                Math.min(_lenderMaxDeposit(), _maxBorrowAmount())
-            );
+            uint256 amountToBorrowBT =
+                Math.min(_fromUsd(amountToBorrowUsd, borrowToken), Math.min(_lenderMaxDeposit(), _maxBorrowAmount()));
 
             /// We want to make sure that the reward apr > borrow apr so we don't report a loss
             /// Borrowing will cause the borrow apr to go up and the rewards apr to go down
-            if (
-                getNetBorrowApr(amountToBorrowBT) >
-                getNetRewardApr(amountToBorrowBT)
-            ) {
+            if (getNetBorrowApr(amountToBorrowBT) > getNetRewardApr(amountToBorrowBT)) {
                 /// If we would push it over the limit don't borrow anything
                 amountToBorrowBT = 0;
             }
@@ -478,9 +426,7 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
             uint256 targetDebtUsd = (targetLTV * collateralInUsd) / WAD;
 
             /// Withdraw the difference from the Depositor
-            _withdrawFromLender(
-                _fromUsd(debtInUsd - targetDebtUsd, borrowToken)
-            );
+            _withdrawFromLender(_fromUsd(debtInUsd - targetDebtUsd, borrowToken));
 
             /// Repay the borrowToken debt.
             _repayTokenDebt();
@@ -515,13 +461,11 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
         /// left AND should harvest or buy borrowToken with asset (potentially realising losses)
         if (
             /// if we didn't get enough
-            _needed > balanceOfAsset() - balance &&
             /// still some debt remaining
-            balanceOfDebt() > 0 &&
             /// but no capital to repay
-            balanceOfLentAssets() == 0 &&
             /// And the leave debt flag is false.
-            !leaveDebtBehind
+            _needed > balanceOfAsset() - balance && balanceOfDebt() > 0 && balanceOfLentAssets() == 0
+                && !leaveDebtBehind
         ) {
             /// using this part of code may result in losses but it is necessary to unlock full collateral
             /// in case of wind down. This should only occur when depleting the strategy so we buy the full
@@ -553,10 +497,7 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
         uint256 debtInUsd = _toUsd(debt, borrowToken);
 
         /// What we need to maintain a health LTV
-        uint256 neededCollateral = _fromUsd(
-            (debtInUsd * WAD) / _getTargetLTV(),
-            address(asset)
-        );
+        uint256 neededCollateral = _fromUsd((debtInUsd * WAD) / _getTargetLTV(), address(asset));
 
         /// We need more collateral so we cant withdraw anything
         if (neededCollateral > collateral) {
@@ -575,9 +516,7 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
      * @param amount The withdrawal amount
      * @return The amount of debt to repay
      */
-    function _calculateAmountToRepay(
-        uint256 amount
-    ) internal view virtual returns (uint256) {
+    function _calculateAmountToRepay(uint256 amount) internal view virtual returns (uint256) {
         if (amount == 0) return 0;
         uint256 collateral = balanceOfCollateral();
         /// To unlock all collateral we must repay all the debt
@@ -659,10 +598,7 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
      */
     function _withdrawBorrowToken(uint256 amount) internal virtual {
         // Use previewWithdraw to round up.
-        uint256 shares = Math.min(
-            lenderVault.previewWithdraw(amount),
-            lenderVault.balanceOf(address(this))
-        );
+        uint256 shares = Math.min(lenderVault.previewWithdraw(amount), lenderVault.balanceOf(address(this)));
         lenderVault.redeem(shares, address(this), address(this));
     }
 
@@ -673,9 +609,7 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
      * @param _asset The asset address
      * @return price asset price
      */
-    function _getPrice(
-        address _asset
-    ) internal view virtual returns (uint256 price);
+    function _getPrice(address _asset) internal view virtual returns (uint256 price);
 
     /**
      * @notice Checks if lending or borrowing is paused
@@ -720,8 +654,7 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
      * @return The lender liquidity
      */
     function _lenderMaxWithdraw() internal view virtual returns (uint256) {
-        return
-            lenderVault.convertToAssets(lenderVault.maxRedeem(address(this)));
+        return lenderVault.convertToAssets(lenderVault.maxRedeem(address(this)));
     }
 
     /**
@@ -729,28 +662,20 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
      * @param newAmount Simulated supply amount
      * @return Net borrow APR
      */
-    function getNetBorrowApr(
-        uint256 newAmount
-    ) public view virtual returns (uint256);
+    function getNetBorrowApr(uint256 newAmount) public view virtual returns (uint256);
 
     /**
      * @notice Gets net reward APR from depositor
      * @param newAmount Simulated supply amount
      * @return Net reward APR
      */
-    function getNetRewardApr(
-        uint256 newAmount
-    ) public view virtual returns (uint256);
+    function getNetRewardApr(uint256 newAmount) public view virtual returns (uint256);
 
     /**
      * @notice Gets liquidation collateral factor for asset
      * @return Liquidation collateral factor
      */
-    function getLiquidateCollateralFactor()
-        public
-        view
-        virtual
-        returns (uint256);
+    function getLiquidateCollateralFactor() public view virtual returns (uint256);
 
     /**
      * @notice Gets supplied collateral balance
@@ -769,8 +694,7 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
      * @return Depositor balance
      */
     function balanceOfLentAssets() public view virtual returns (uint256) {
-        return
-            lenderVault.convertToAssets(lenderVault.balanceOf(address(this)));
+        return lenderVault.convertToAssets(lenderVault.balanceOf(address(this)));
     }
 
     /**
@@ -809,12 +733,7 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
      * @notice Gets base tokens owed in asset terms
      * @return owed tokens owed in asset value
      */
-    function _borrowTokenOwedInAsset()
-        internal
-        view
-        virtual
-        returns (uint256 owed)
-    {
+    function _borrowTokenOwedInAsset() internal view virtual returns (uint256 owed) {
         /// Don't do conversions unless it's a non-zero false.
         uint256 owedInBase = borrowTokenOwedBalance();
         if (owedInBase != 0) {
@@ -833,9 +752,7 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
         if (collateral == 0) return 0;
 
         unchecked {
-            return
-                (_toUsd(balanceOfDebt(), borrowToken) * WAD) /
-                _toUsd(collateral, address(asset));
+            return (_toUsd(balanceOfDebt(), borrowToken) * WAD) / _toUsd(collateral, address(asset));
         }
     }
 
@@ -846,9 +763,7 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
      */
     function _getTargetLTV() internal view virtual returns (uint256) {
         unchecked {
-            return
-                (getLiquidateCollateralFactor() * targetLTVMultiplier) /
-                MAX_BPS;
+            return (getLiquidateCollateralFactor() * targetLTVMultiplier) / MAX_BPS;
         }
     }
 
@@ -859,9 +774,7 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
      */
     function _getWarningLTV() internal view virtual returns (uint256) {
         unchecked {
-            return
-                (getLiquidateCollateralFactor() * warningLTVMultiplier) /
-                MAX_BPS;
+            return (getLiquidateCollateralFactor() * warningLTVMultiplier) / MAX_BPS;
         }
     }
 
@@ -872,15 +785,10 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
      * @param _token The token address
      * @return The USD value scaled by 1e8
      */
-    function _toUsd(
-        uint256 _amount,
-        address _token
-    ) internal view virtual returns (uint256) {
+    function _toUsd(uint256 _amount, address _token) internal view virtual returns (uint256) {
         if (_amount == 0) return 0;
         unchecked {
-            return
-                (_amount * _getPrice(_token)) /
-                (10 ** ERC20(_token).decimals());
+            return (_amount * _getPrice(_token)) / (10 ** ERC20(_token).decimals());
         }
     }
 
@@ -891,15 +799,10 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
      * @param _token The token address
      * @return The token amount
      */
-    function _fromUsd(
-        uint256 _amount,
-        address _token
-    ) internal view virtual returns (uint256) {
+    function _fromUsd(uint256 _amount, address _token) internal view virtual returns (uint256) {
         if (_amount == 0) return 0;
         unchecked {
-            return
-                (_amount * (10 ** ERC20(_token).decimals())) /
-                _getPrice(_token);
+            return (_amount * (10 ** ERC20(_token).decimals())) / _getPrice(_token);
         }
     }
 
@@ -936,16 +839,10 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
      * @param _to Output token
      * @return Estimated output amount
      */
-    function _getAmountOut(
-        uint256 _amount,
-        address _from,
-        address _to
-    ) internal view virtual returns (uint256) {
+    function _getAmountOut(uint256 _amount, address _from, address _to) internal view virtual returns (uint256) {
         if (_amount == 0) return 0;
 
-        return
-            (_fromUsd(_toUsd(_amount, _from), _to) * (MAX_BPS - slippage)) /
-            MAX_BPS;
+        return (_fromUsd(_toUsd(_amount, _from), _to) * (MAX_BPS - slippage)) / MAX_BPS;
     }
 
     /**
@@ -997,24 +894,16 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
     /// @notice Sell a specific amount of `borrowToken` -> asset.
     ///     The amount of borrowToken should be loose in the strategy before this is called
     ///     max uint input will sell any excess borrowToken we have.
-    function sellBorrowToken(
-        uint256 _amount
-    ) external virtual onlyEmergencyAuthorized {
+    function sellBorrowToken(uint256 _amount) external virtual onlyEmergencyAuthorized {
         if (_amount == type(uint256).max) {
             uint256 _balanceOfBorrowToken = balanceOfBorrowToken();
-            _amount = Math.min(
-                balanceOfLentAssets() + _balanceOfBorrowToken - balanceOfDebt(),
-                _balanceOfBorrowToken
-            );
+            _amount = Math.min(balanceOfLentAssets() + _balanceOfBorrowToken - balanceOfDebt(), _balanceOfBorrowToken);
         }
         _sellBorrowToken(_amount);
     }
 
     /// @notice Withdraw a specific amount of `_token`
-    function manualWithdraw(
-        address _token,
-        uint256 _amount
-    ) external virtual onlyEmergencyAuthorized {
+    function manualWithdraw(address _token, uint256 _amount) external virtual onlyEmergencyAuthorized {
         if (_token == borrowToken) {
             _withdrawBorrowToken(_amount);
         } else {

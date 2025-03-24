@@ -2,7 +2,7 @@
 pragma solidity 0.8.23;
 
 interface IBorrowerOperations {
-
+    function MCR() external view returns (uint256);
     function openTrove(
         address _owner,
         uint256 _ownerIndex,
@@ -20,5 +20,5 @@ interface IBorrowerOperations {
     function withdrawColl(uint256 _troveId, uint256 _amount) external;
     function repayBold(uint256 _troveId, uint256 _boldAmount) external;
     function withdrawBold(uint256 _troveId, uint256 _amount, uint256 _maxFee) external;
-
+    function closeTrove(uint256 _troveId) external;
 }

@@ -7,21 +7,29 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IAddressesRegistry, IBorrowerOperations, ITroveManager} from "./interfaces/IAddressesRegistry.sol";
 import {ILiquityV2SPStrategy} from "./interfaces/ILiquityV2SPStrategy.sol";
 import {IPriceFeed} from "./interfaces/IPriceFeed.sol";
+import {IAuction, IAuctionFactory} from "./interfaces/IAuctionFactory.sol";
 
-import {BaseLenderBorrower} from "./BaseLenderBorrower.sol";
+import {BaseLenderBorrower, Math} from "./BaseLenderBorrower.sol";
+
+// NOTES:
+// 1. asset -- scrvUSD
+// 2. borrow token -- USA.d
+// 3. lender vault -- yvLiquityV2SP
 
 // @todo -- liquidation kills vault? can we _openTrove again?
 // @todo -- what happens on zombie trove?
 // @todo -- _emergencyWithdraw?
 // @todo -- after a redemption (when have > owe (`have` being usa.d)) -- auction off `extra = have - owe;` back to asset (crvusd)
+// @dev -- stratagiest will need to deploy enough funds to open a trove after deployment
+// @dev -- last withdrawal may be stuck until a shutdown (due to Liquity's minimum debt requirement)
+// @dev -- will probably not use a factory here -- deploy manually
 // @dev -- reporting will be blocked by healthCheck after a redemption, until the auction is complete
 contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     using SafeERC20 for ERC20;
 
-    // NOTES:
-    // 1. asset -- scrvUSD
-    // 2. borrow token -- USA.d
-    // 3. lender vault -- yvLiquityV2SP
+    // ===============================================================
+    // Structs
+    // ===============================================================
 
     struct AssetInfo {
         uint256 heartbeat;
@@ -62,6 +70,15 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     /// @notice WETH token
     ERC20 private constant WETH = ERC20(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
 
+    /// @notice Factory for creating the auction contract
+    IAuctionFactory public constant AUCTION_FACTORY = IAuctionFactory(0xCfA510188884F199fcC6e750764FAAbE6e56ec40);
+
+    /// @notice Auction contract for asset -> borrow token
+    IAuction public immutable ASSET_TO_BORROW_AUCTION;
+
+    /// @notice Auction contract for borrow token -> asset
+    IAuction public immutable BORROW_TO_ASSET_AUCTION;
+
     /// @notice Liquity's borrower operations contract
     IBorrowerOperations public immutable BORROWER_OPERATIONS;
 
@@ -83,12 +100,21 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
         require(lenderVault_.COLL() == _asset && lenderVault_.asset() == _borrowToken, "!_lenderVault");
 
         IAddressesRegistry addressesRegistry_ = IAddressesRegistry(_addressesRegistry);
-        require(addressesRegistry_.collToken() == _asset && addressesRegistry_.boldToken() == _borrowToken, "!_addressesRegistry");
+        require(
+            addressesRegistry_.collToken() == _asset && addressesRegistry_.boldToken() == _borrowToken,
+            "!_addressesRegistry"
+        );
         BORROWER_OPERATIONS = addressesRegistry_.borrowerOperations();
         TROVE_MANAGER = addressesRegistry_.troveManager();
 
+        ASSET_TO_BORROW_AUCTION = AUCTION_FACTORY.createNewAuction(_borrowToken);
+        ASSET_TO_BORROW_AUCTION.enable(_asset);
+
+        BORROW_TO_ASSET_AUCTION = AUCTION_FACTORY.createNewAuction(_asset);
+        BORROW_TO_ASSET_AUCTION.enable(_borrowToken);
+
         asset.forceApprove(address(BORROWER_OPERATIONS), type(uint256).max);
-        WETH.forceApprove(address(BORROWER_OPERATIONS), ETH_GAS_COMPENSATION);
+        WETH.forceApprove(address(BORROWER_OPERATIONS), type(uint256).max);
     }
 
     // ===============================================================
@@ -102,20 +128,21 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     function setAssetInfo(uint256 _heartbeat, address _asset, address _priceFeed) external onlyManagement {
         require(_heartbeat <= 1 days, "heartbeat");
 
-        (, int256 _answer, , uint256 _updatedAt, ) = IPriceFeed(_priceFeed).latestRoundData();
+        (, int256 _answer,, uint256 _updatedAt,) = IPriceFeed(_priceFeed).latestRoundData();
         require(_answer > 0 && _updatedAt > block.timestamp - _heartbeat, "stale");
         assetInfo[_asset] = AssetInfo(_heartbeat, IPriceFeed(_priceFeed));
     }
 
     /// @notice Opens a trove
+    /// @dev Must be called after the strategy has been deployed, otherwise it will be unuseable
     /// @dev `asset` balance must be large enough to open a trove with `MIN_DEBT`
     /// @dev Borrowing at the minimum interest rate because we don't mind getting redeeemed
-    /// @dev ETH_GAS_COMPENSATION amount of WETH needs to be sent to the contract prior to calling this function
     /// @dev For hints, see https://github.com/liquity/bold?tab=readme-ov-file#trove-operation-with-hints
     /// @param _upperHint Upper hint
     /// @param _lowerHint Lower hint
-    function openTrove(uint256 _upperHint, uint256 _lowerHint) external onlyManagement {
-        require(troveId == 0, "troveId");
+    /// @param _sugardaddy ty sugardaddy
+    function openTrove(uint256 _upperHint, uint256 _lowerHint, address _sugardaddy) external onlyManagement {
+        WETH.safeTransferFrom(_sugardaddy, address(this), ETH_GAS_COMPENSATION);
         troveId = BORROWER_OPERATIONS.openTrove(
             address(this), // _owner
             0, // _ownerIndex
@@ -132,12 +159,38 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     }
 
     // ===============================================================
+    // Emergency authorized functions
+    // ===============================================================
+
+    /// @notice Buy borrow token
+    /// @dev Calling this function will try to buy the full amount of the remaining debt
+    ///      This may be necessary to unlock full collateral in case of wind down. Should not be called otherwise
+    function buyBorrowToken() external onlyEmergencyAuthorized {
+        _buyBorrowToken();
+    }
+
+    // ===============================================================
+    // Keeper functions
+    // ===============================================================
+
+    /// @notice Auction off extra borrow token to asset
+    /// @dev Should be called after a redemption/liquidation and when there's enough extra borrow token
+    function kickRewards() external onlyKeepers {
+        uint256 _have = balanceOfLentAssets() + balanceOfBorrowToken();
+        uint256 _owe = balanceOfDebt();
+        require(_have > _owe + DUST_THRESHOLD, "!rewards");
+        uint256 _extra = _have - _owe;
+        _withdrawFromLender(_extra);
+        _sellBorrowToken(Math.min(_extra, balanceOfBorrowToken()));
+    }
+
+    // ===============================================================
     // Internal write functions
     // ===============================================================
 
     /// @inheritdoc BaseLenderBorrower
     function _deployFunds(uint256 _amount) internal override {
-        if (troveId != 0) _leveragePosition(_amount);
+        if (_amount > DUST_THRESHOLD) _leveragePosition(_amount);
     }
 
     /// @inheritdoc BaseLenderBorrower
@@ -162,7 +215,13 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
 
     /// @inheritdoc BaseLenderBorrower
     function _emergencyWithdraw(uint256 _amount) internal override {
-        // borrowerOperations.closeTrove(uint256 _troveId)
+        if (_amount > 0) _withdrawBorrowToken(Math.min(_amount, _lenderMaxWithdraw()));
+
+        // last one turn off the lights
+        BORROWER_OPERATIONS.closeTrove(troveId);
+
+        uint256 _balance = WETH.balanceOf(address(this));
+        if (_balance > 0) WETH.safeTransfer(msg.sender, _balance);
     }
 
     // ===============================================================
@@ -173,28 +232,25 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     function _getPrice(address _asset) internal view override returns (uint256 price) {
         AssetInfo memory _info = assetInfo[_asset];
         require(address(_info.priceFeed) != address(0), "!_priceFeed");
-        (, int256 _answer, , uint256 _updatedAt, ) = _info.priceFeed.latestRoundData();
+        (, int256 _answer,, uint256 _updatedAt,) = _info.priceFeed.latestRoundData();
         require(_answer > 0 && _updatedAt > block.timestamp - _info.heartbeat, "stale");
         uint256 _decimals = _info.priceFeed.decimals();
         return _decimals < PRICE_FEED_DECIMALS ? uint256(_answer) * (WAD / 10 ** _decimals) : uint256(_answer);
     }
 
     /// @inheritdoc BaseLenderBorrower
-    function _isSupplyPaused() internal view override returns (bool) { // @todo -- here
-        // * @notice Checks if lending or borrowing is paused
-        // * @return True if paused, false otherwise
+    function _isSupplyPaused() internal view override returns (bool) {
+        return false;
     }
 
     /// @inheritdoc BaseLenderBorrower
     function _isBorrowPaused() internal view override returns (bool) {
-        // * @notice Checks if borrowing is paused
-        // * @return True if paused, false otherwise
+        return false;
     }
 
     /// @inheritdoc BaseLenderBorrower
     function _isLiquidatable() internal view override returns (bool) {
-        // * @notice Checks if the strategy is liquidatable
-        // * @return True if liquidatable, false otherwise
+        return TROVE_MANAGER.getCurrentICR(troveId, _getPrice(address(asset))) < BORROWER_OPERATIONS.MCR();
     }
 
     /// @inheritdoc BaseLenderBorrower
@@ -208,48 +264,28 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     }
 
     /// @inheritdoc BaseLenderBorrower
-    function getNetBorrowApr(uint256 newAmount) public view override returns (uint256) {
-        // * @notice Gets net borrow APR from depositor
-        // * @param newAmount Simulated supply amount
-        // * @return Net borrow APR
+    function getNetBorrowApr(uint256 /* newAmount */ ) public view override returns (uint256) {
+        return TROVE_MANAGER.getLatestTroveData(troveId).annualInterestRate;
     }
 
     /// @inheritdoc BaseLenderBorrower
-    function getNetRewardApr(uint256 newAmount) public view override returns (uint256) {
-        // * @notice Gets net reward APR from depositor
-        // * @param newAmount Simulated supply amount
-        // * @return Net reward APR
+    function getNetRewardApr(uint256 /* newAmount */ ) public view override returns (uint256) {
+        return WAD; // Assuming reward APR will never be less than borrowing APR (0.5%)
     }
 
     /// @inheritdoc BaseLenderBorrower
     function getLiquidateCollateralFactor() public view override returns (uint256) {
-        // * @notice Gets liquidation collateral factor for asset
-        // * @return Liquidation collateral factor
+        return WAD * WAD / BORROWER_OPERATIONS.MCR();
     }
 
     /// @inheritdoc BaseLenderBorrower
     function balanceOfCollateral() public view override returns (uint256) {
-        // * @notice Gets supplied collateral balance
-        // * @return Collateral balance
-    //     struct LatestTroveData {
-    //     uint256 entireDebt;
-    //     uint256 entireColl;
-    //     uint256 redistBoldDebtGain;
-    //     uint256 redistCollGain;
-    //     uint256 accruedInterest;
-    //     uint256 recordedDebt;
-    //     uint256 annualInterestRate;
-    //     uint256 weightedRecordedDebt;
-    //     uint256 accruedBatchManagementFee;
-    //     uint256 lastInterestRateAdjTime;
-    // }
-        // TROVE_MANAGER.getLatestTroveData
+        return TROVE_MANAGER.getLatestTroveData(troveId).entireColl;
     }
 
     /// @inheritdoc BaseLenderBorrower
     function balanceOfDebt() public view override returns (uint256) {
-        // * @notice Gets current borrow balance
-        // * @return Borrow balance
+        return TROVE_MANAGER.getLatestTroveData(troveId).entireDebt;
     }
 
     // ===============================================================
@@ -258,25 +294,28 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
 
     /// @inheritdoc BaseLenderBorrower
     function _claimRewards() internal override {
-        // * @notice Claims reward tokens.
+        return; // No rewards to claim
     }
 
     /// @inheritdoc BaseLenderBorrower
     function _claimAndSellRewards() internal override {
-        // * @notice Claims and sells available reward tokens
-        // * @dev Handles claiming, selling rewards for borrow tokens if needed, and selling remaining rewards for asset
+        return; // Use `kickRewards()` instead
     }
 
     /// @inheritdoc BaseLenderBorrower
     function _buyBorrowToken() internal override {
-        // * @dev Buys the borrow token using the strategy's assets.
-        // * This function should only ever be called when withdrawing all funds from the strategy if there is debt left over.
-        // * Initially, it tries to sell rewards for the needed amount of base token, then it will swap assets.
-        // * Using this function in a standard withdrawal can cause it to be sandwiched, which is why rewards are used first.
+        uint256 _borrowTokenStillOwed = borrowTokenOwedBalance();
+        if (_borrowTokenStillOwed > 0) {
+            uint256 _maxAssetBalance = _fromUsd(_toUsd(_borrowTokenStillOwed, borrowToken), address(asset));
+            if (_maxAssetBalance <= DUST_THRESHOLD) return;
+            asset.safeTransfer(address(ASSET_TO_BORROW_AUCTION), _maxAssetBalance);
+            ASSET_TO_BORROW_AUCTION.kick(address(asset));
+        }
     }
 
     /// @inheritdoc BaseLenderBorrower
     function _sellBorrowToken(uint256 _amount) internal override {
-        // * @dev Will swap from the base token => underlying asset.
+        ERC20(borrowToken).safeTransfer(address(BORROW_TO_ASSET_AUCTION), _amount);
+        BORROW_TO_ASSET_AUCTION.kick(borrowToken);
     }
 }
