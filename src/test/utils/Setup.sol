@@ -83,7 +83,8 @@ contract Setup is ExtendedTest, IEvents {
                     "Tokenized Strategy",
                     address(0), // borrowToken
                     address(0), // lenderVault
-                    address(0) // addressesRegistry
+                    address(0), // addressesRegistry
+                    address(0) // priceProvider
                 )
             )
         );

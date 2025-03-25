@@ -30,6 +30,7 @@ contract StrategyFactory {
      * @param _borrowToken The token to borrow.
      * @param _lenderVault The vault to lend to.
      * @param _addressesRegistry The address of Liquity's addressesRegistry.
+     * @param _priceProvider The address of the price provider.
      * @return . The address of the new strategy.
      */
     function newStrategy(
@@ -37,11 +38,12 @@ contract StrategyFactory {
         string calldata _name,
         address _borrowToken,
         address _lenderVault,
-        address _addressesRegistry
+        address _addressesRegistry,
+        address _priceProvider
     ) external virtual returns (address) {
         // tokenized strategies available setters.
         IStrategyInterface _newStrategy =
-            IStrategyInterface(address(new Strategy(_asset, _name, _borrowToken, _lenderVault, _addressesRegistry)));
+            IStrategyInterface(address(new Strategy(_asset, _name, _borrowToken, _lenderVault, _addressesRegistry, _priceProvider)));
 
         _newStrategy.setPerformanceFeeRecipient(performanceFeeRecipient);
 

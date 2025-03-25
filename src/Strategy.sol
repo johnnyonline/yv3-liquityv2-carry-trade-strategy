@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0
-pragma solidity ^0.8.18;
+pragma solidity 0.8.23;
 
 import {BaseStrategy, ERC20} from "@tokenized-strategy/BaseStrategy.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import {IAddressesRegistry, IBorrowerOperations, ITroveManager} from "./interfaces/IAddressesRegistry.sol";
 import {ILiquityV2SPStrategy} from "./interfaces/ILiquityV2SPStrategy.sol";
-import {IPriceFeed} from "./interfaces/IPriceFeed.sol";
 import {IAuction, IAuctionFactory} from "./interfaces/IAuctionFactory.sol";
+import {IPriceProvider} from "./interfaces/IPriceProvider.sol";
 
 import {BaseLenderBorrower, Math} from "./BaseLenderBorrower.sol";
 
@@ -15,22 +15,12 @@ import {BaseLenderBorrower, Math} from "./BaseLenderBorrower.sol";
 // 1. asset -- scrvUSD
 // 2. borrow token -- USA.d
 // 3. lender vault -- yvLiquityV2SP
-// @todo -- here -- export stuff to price provider contract
 // @dev -- stratagiest will need to deploy enough funds to open a trove after deployment
 // @dev -- last withdrawal may be stuck until a shutdown (due to Liquity's minimum debt requirement)
 // @dev -- will probably not use a factory here -- deploy manually
 // @dev -- reporting will be blocked by healthCheck after a redemption/liquidation, until the auction is complete
 contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     using SafeERC20 for ERC20;
-
-    // ===============================================================
-    // Structs
-    // ===============================================================
-
-    struct AssetInfo {
-        uint256 heartbeat;
-        IPriceFeed priceFeed;
-    }
 
     // ===============================================================
     // Storage
@@ -42,15 +32,9 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     /// @notice Buffer percentage for the auction starting price
     uint256 public auctionBufferPercentage;
 
-    /// @notice Asset info
-    mapping(address asset => AssetInfo info) public assetInfo;
-
     // ===============================================================
     // Constants
     // ===============================================================
-
-    /// @notice `_getPrice` returns the price of the asset with 18 decimals
-    uint256 private constant PRICE_FEED_DECIMALS = 18;
 
     /// @notice Any amount below this will be ignored
     uint256 private constant DUST_THRESHOLD = 10_000;
@@ -81,6 +65,9 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     /// @notice Auction contract for borrow token -> asset
     IAuction public immutable BORROW_TO_ASSET_AUCTION;
 
+    /// @notice Price provider contract
+    IPriceProvider public immutable PRICE_PROVIDER;
+
     /// @notice Liquity's borrower operations contract
     IBorrowerOperations public immutable BORROWER_OPERATIONS;
 
@@ -96,7 +83,8 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
         string memory _name,
         address _borrowToken,
         address _lenderVault,
-        address _addressesRegistry
+        address _addressesRegistry,
+        address _priceProvider
     ) BaseLenderBorrower(_asset, _name, _borrowToken, _lenderVault) {
         ILiquityV2SPStrategy lenderVault_ = ILiquityV2SPStrategy(_lenderVault);
         require(lenderVault_.COLL() == _asset && lenderVault_.asset() == _borrowToken, "!_lenderVault");
@@ -109,14 +97,16 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
 
         auctionBufferPercentage = MIN_AUCTION_BUFFER_PERCENTAGE;
 
-        BORROWER_OPERATIONS = addressesRegistry_.borrowerOperations();
-        TROVE_MANAGER = addressesRegistry_.troveManager();
+        PRICE_PROVIDER = IPriceProvider(_priceProvider);
 
         ASSET_TO_BORROW_AUCTION = AUCTION_FACTORY.createNewAuction(_borrowToken);
         ASSET_TO_BORROW_AUCTION.enable(_asset);
 
         BORROW_TO_ASSET_AUCTION = AUCTION_FACTORY.createNewAuction(_asset);
         BORROW_TO_ASSET_AUCTION.enable(_borrowToken);
+
+        BORROWER_OPERATIONS = addressesRegistry_.borrowerOperations();
+        TROVE_MANAGER = addressesRegistry_.troveManager();
 
         asset.forceApprove(address(BORROWER_OPERATIONS), type(uint256).max);
         WETH.forceApprove(address(BORROWER_OPERATIONS), type(uint256).max);
@@ -125,17 +115,6 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     // ===============================================================
     // Management functions
     // ===============================================================
-
-    /// @notice Set asset info
-    /// @param _heartbeat Heartbeat
-    /// @param _asset Asset address
-    /// @param _priceFeed Price feed
-    function setAssetInfo(uint256 _heartbeat, address _asset, address _priceFeed) external onlyManagement {
-        require(_heartbeat <= 1 days, "heartbeat");
-        (, int256 _answer,, uint256 _updatedAt,) = IPriceFeed(_priceFeed).latestRoundData();
-        require(_answer > 0 && _updatedAt > block.timestamp - _heartbeat, "stale");
-        assetInfo[_asset] = AssetInfo(_heartbeat, IPriceFeed(_priceFeed));
-    }
 
     /// @notice Set the buffer percentage for the auction starting price
     /// @param _auctionBufferPercentage Auction buffer percentage
@@ -268,12 +247,7 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
 
     /// @inheritdoc BaseLenderBorrower
     function _getPrice(address _asset) internal view override returns (uint256 price) {
-        AssetInfo memory _info = assetInfo[_asset];
-        require(address(_info.priceFeed) != address(0), "!_priceFeed");
-        (, int256 _answer,, uint256 _updatedAt,) = _info.priceFeed.latestRoundData();
-        require(_answer > 0 && _updatedAt > block.timestamp - _info.heartbeat, "stale");
-        uint256 _decimals = _info.priceFeed.decimals();
-        return _decimals < PRICE_FEED_DECIMALS ? uint256(_answer) * (WAD / 10 ** _decimals) : uint256(_answer);
+        return PRICE_PROVIDER.getPrice(_asset);
     }
 
     /// @inheritdoc BaseLenderBorrower
