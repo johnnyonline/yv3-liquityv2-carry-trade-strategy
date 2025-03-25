@@ -2,6 +2,14 @@
 pragma solidity 0.8.23;
 
 interface ITroveManager {
+    enum Status {
+        nonExistent,
+        active,
+        closedByOwner,
+        closedByLiquidation,
+        zombie
+    }
+
     struct LatestTroveData {
         uint256 entireDebt;
         uint256 entireColl;
@@ -17,4 +25,5 @@ interface ITroveManager {
 
     function getCurrentICR(uint256 _troveId, uint256 _price) external view returns (uint256);
     function getLatestTroveData(uint256 _troveId) external view returns (LatestTroveData memory trove);
+    function getTroveStatus(uint256 _troveId) external view returns (Status);
 }
