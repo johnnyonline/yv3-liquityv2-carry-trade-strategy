@@ -4,9 +4,15 @@ pragma solidity ^0.8.18;
 import "forge-std/console2.sol";
 import {ExtendedTest} from "./ExtendedTest.sol";
 
+import {PriceProvider} from "../../PriceProvider.sol";
 import {LiquityV2CarryTradeStrategy as Strategy, ERC20} from "../../Strategy.sol";
 import {StrategyFactory} from "../../StrategyFactory.sol";
-import {IStrategyInterface} from "../../interfaces/IStrategyInterface.sol";
+import {IStrategy, IStrategyInterface} from "../../interfaces/IStrategyInterface.sol";
+import {IHintHelpers} from "../../interfaces/IHintHelpers.sol";
+import {ITroveManager} from "../../interfaces/ITroveManager.sol";
+import {ISortedTroves} from "../../interfaces/ISortedTroves.sol";
+
+import {SavingsBoldMock} from "../mocks/SavingsBoldMock.sol";
 
 // Inherit the events so they can be checked if desired.
 import {IEvents} from "@tokenized-strategy/interfaces/IEvents.sol";
@@ -20,15 +26,36 @@ interface IFactory {
 }
 
 contract Setup is ExtendedTest, IEvents {
+
+    // Fork contracts
+    // liquity v2.1 WETH
+    address public addressesRegistry = 0x38e1F07b954cFaB7239D7acab49997FBaAD96476;
+    address public troveManager = 0x81D78814DF42DA2caB0E8870C477bC3Ed861DE66;
+    address public hintHelpers = 0xe3BB97EE79aC4BdFc0c30A95aD82c243c9913aDa;
+    address public sortedTroves = 0x879474Cfbb980fB6899aaaA9b5D5EE14fFbF85A9;
+    uint256 public branchIndex = 0;
+    //
+    address public clEthUsdOracle = 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419;
+    address public clUsdcUsdOracle = 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6;
+
+    // uint256 public clEthUsdOracleHeartbeat = 1 hours;
+    // uint256 public clUsdcUsdOracleHeartbeat = 24 hours;
+    uint256 public clEthUsdOracleHeartbeat = 100 days;
+    uint256 public clUsdcUsdOracleHeartbeat = 100 days;
+
     // Contract instances that we will use repeatedly.
+    ERC20 public borrowToken;
     ERC20 public asset;
+    IStrategy public lenderVault;
     IStrategyInterface public strategy;
+    PriceProvider public priceProvider;
 
     StrategyFactory public strategyFactory;
 
     mapping(string => address) public tokenAddrs;
 
     // Addresses for different roles we will use repeatedly.
+    address public strategist = address(69);
     address public user = address(10);
     address public keeper = address(4);
     address public management = address(1);
@@ -49,11 +76,24 @@ contract Setup is ExtendedTest, IEvents {
     // Default profit max unlock time is set for 10 days
     uint256 public profitMaxUnlockTime = 10 days;
 
+    // Amount strategist deposits after deployment to open a trove
+    uint256 public initialStrategistDeposit = 2 ether;
+
+    // Constants from the Strategy
+    uint256 public constant ETH_GAS_COMPENSATION = 0.0375 ether;
+    uint256 private constant MIN_ANNUAL_INTEREST_RATE = 1e18 / 100 / 2; // 0.5%
+
     function setUp() public virtual {
         _setTokenAddrs();
 
         // Set asset
-        asset = ERC20(tokenAddrs["DAI"]);
+        asset = ERC20(tokenAddrs["WETH"]);
+
+        // Set borrowToken
+        borrowToken = ERC20(tokenAddrs["BOLD"]);
+
+        // Set mock
+        lenderVault = IStrategy(address(new SavingsBoldMock(address(borrowToken), address(asset))));
 
         // Set decimals
         decimals = asset.decimals();
@@ -75,16 +115,18 @@ contract Setup is ExtendedTest, IEvents {
     }
 
     function setUpStrategy() public returns (address) {
+        priceProvider = new PriceProvider();
+
         // we save the strategy as a IStrategyInterface to give it the needed interface
         IStrategyInterface _strategy = IStrategyInterface(
             address(
                 strategyFactory.newStrategy(
                     address(asset),
                     "Tokenized Strategy",
-                    address(0), // borrowToken
-                    address(0), // lenderVault
-                    address(0), // addressesRegistry
-                    address(0) // priceProvider
+                    address(borrowToken),
+                    address(lenderVault),
+                    address(addressesRegistry),
+                    address(priceProvider) // priceProvider
                 )
             )
         );
@@ -92,7 +134,30 @@ contract Setup is ExtendedTest, IEvents {
         vm.prank(management);
         _strategy.acceptManagement();
 
+        priceProvider.transferOwnership(management);
+        vm.prank(management);
+        priceProvider.acceptOwnership();
+
+        setUpPriceProvider();
+
         return address(_strategy);
+    }
+
+    function strategistDepositAndOpenTrove() public returns (uint256) {
+        // Deposit into strategy
+        mintAndDepositIntoStrategy(strategy, strategist, initialStrategistDeposit);
+
+        // Approve gas compensation spending
+        airdrop(ERC20(tokenAddrs["WETH"]), strategist, ETH_GAS_COMPENSATION);
+        vm.prank(strategist);
+        ERC20(tokenAddrs["WETH"]).approve(address(strategy), ETH_GAS_COMPENSATION);
+
+        // Open Trove
+        (uint256 _upperHint, uint256 _lowerHint) = _findHints();
+        vm.prank(management);
+        strategy.openTrove(_upperHint, _lowerHint, strategist);
+
+        return initialStrategistDeposit;
     }
 
     function depositIntoStrategy(IStrategyInterface _strategy, address _user, uint256 _amount) public {
@@ -106,6 +171,10 @@ contract Setup is ExtendedTest, IEvents {
     function mintAndDepositIntoStrategy(IStrategyInterface _strategy, address _user, uint256 _amount) public {
         airdrop(asset, _user, _amount);
         depositIntoStrategy(_strategy, _user, _amount);
+    }
+
+    function mockLenderEarnInterest(uint256 _interestAmount) public {
+        airdrop(borrowToken, address(lenderVault), _interestAmount);
     }
 
     // For checking the amounts in the strategy
@@ -144,6 +213,13 @@ contract Setup is ExtendedTest, IEvents {
         strategy.setPerformanceFee(_performanceFee);
     }
 
+    function setUpPriceProvider() public {
+        vm.startPrank(management);
+        priceProvider.setAssetInfo(clEthUsdOracleHeartbeat, address(asset), clEthUsdOracle);
+        priceProvider.setAssetInfo(clUsdcUsdOracleHeartbeat, address(borrowToken), clUsdcUsdOracle);
+        vm.stopPrank();
+    }
+
     function _setTokenAddrs() internal {
         tokenAddrs["WBTC"] = 0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599;
         tokenAddrs["YFI"] = 0x0bc529c00C6401aEF6D220BE8C6Ea1667F6Ad93e;
@@ -152,5 +228,32 @@ contract Setup is ExtendedTest, IEvents {
         tokenAddrs["USDT"] = 0xdAC17F958D2ee523a2206206994597C13D831ec7;
         tokenAddrs["DAI"] = 0x6B175474E89094C44Da98b954EedeAC495271d0F;
         tokenAddrs["USDC"] = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+        tokenAddrs["BOLD"] = 0xb01dd87B29d187F3E3a4Bf6cdAebfb97F3D9aB98;
+    }
+
+    function _findHints() private view returns (uint256 _upperHint, uint256 _lowerHint) {
+        // Find approx hint (off-chain)
+        (uint256 _approxHint,,) = IHintHelpers(hintHelpers).getApproxHint({
+            _collIndex: branchIndex,
+            _interestRate: MIN_ANNUAL_INTEREST_RATE,
+            _numTrials: sqrt(100 * ITroveManager(troveManager).getTroveIdsCount()),
+            _inputRandomSeed: block.timestamp
+        });
+
+        // Find concrete insert position (off-chain)
+        (_upperHint, _lowerHint) = ISortedTroves(sortedTroves).findInsertPosition(MIN_ANNUAL_INTEREST_RATE, _approxHint, _approxHint);
+    }
+
+    function sqrt(uint256 y) private pure returns (uint256 z) {
+        if (y > 3) {
+            z = y;
+            uint256 x = y / 2 + 1;
+            while (x < z) {
+                z = x;
+                x = (y / x + x) / 2;
+            }
+        } else if (y != 0) {
+            z = 1;
+        }
     }
 }

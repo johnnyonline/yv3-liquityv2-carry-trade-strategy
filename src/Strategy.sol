@@ -19,6 +19,7 @@ import {BaseLenderBorrower, Math} from "./BaseLenderBorrower.sol";
 // @dev -- last withdrawal may be stuck until a shutdown (due to Liquity's minimum debt requirement)
 // @dev -- will probably not use a factory here -- deploy manually
 // @dev -- reporting will be blocked by healthCheck after a redemption/liquidation, until the auction is complete
+// @dev -- Should not set `leaveDebtBehind` to True since it could break `_liquidatePosition` bc of no atomic swap. instead, if needed, buy borrow token manually
 contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     using SafeERC20 for ERC20;
 
@@ -124,20 +125,20 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     }
 
     /// @notice Open a trove
-    /// @dev Callable only on deployment or after a liquidation
+    /// @dev Callable only after deployment or after liquidation
     /// @dev `asset` balance must be large enough to open a trove with `MIN_DEBT`
     /// @dev Borrowing at the minimum interest rate because we don't mind getting redeeemed
-    /// @dev For hints, see https://github.com/liquity/bold?tab=readme-ov-file#trove-operation-with-hints
     /// @param _upperHint Upper hint
     /// @param _lowerHint Lower hint
     /// @param _sugardaddy ty sugardaddy
     function openTrove(uint256 _upperHint, uint256 _lowerHint, address _sugardaddy) external onlyManagement {
         require(troveId == 0 || TROVE_MANAGER.getTroveStatus(troveId) == ITroveManager.Status.closedByLiquidation, "open");
+        uint256 _collAmount = balanceOfAsset();
         WETH.safeTransferFrom(_sugardaddy, address(this), ETH_GAS_COMPENSATION);
         troveId = BORROWER_OPERATIONS.openTrove(
             address(this), // owner
             0, // ownerIndex
-            asset.balanceOf(address(this)), // collAmount
+            _collAmount,
             MIN_DEBT, // boldAmount
             _upperHint,
             _lowerHint,
@@ -169,7 +170,6 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     // Keeper functions
     // ===============================================================
 
-    // @todo -- auction.setPrice for faster execution
     /// @notice Auction off extra borrow token to asset
     /// @dev Should be called after a redemption/liquidation and when there's enough extra borrow token
     function kickRewards() external onlyKeepers {
@@ -335,6 +335,11 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
         BORROW_TO_ASSET_AUCTION.kick(borrowToken);
     }
 
+    /// @notice Set the auction starting price
+    /// @dev Should help setting the auction faster
+    /// @param _toAuction Amount to auction
+    /// @param _auction Auction contract
+    /// @param _token Token to auction
     function _setAuctionStartingPrice(uint256 _toAuction, address _auction, address _token) internal {
         uint256 _price = _getPrice(_token);
         uint256 _available = ERC20(_token).balanceOf(_auction) + _toAuction;

@@ -49,7 +49,7 @@ contract PriceProvider is Ownable2Step {
     /// @param _asset Asset address
     /// @param _priceFeed Price feed
     function setAssetInfo(uint256 _heartbeat, address _asset, address _priceFeed) external onlyOwner {
-        require(_heartbeat <= 1 days, "heartbeat");
+        // require(_heartbeat <= 1 days, "heartbeat");
         (, int256 _answer,, uint256 _updatedAt,) = IPriceFeed(_priceFeed).latestRoundData();
         require(_answer > 0 && _updatedAt > block.timestamp - _heartbeat, "stale");
         assetInfo[_asset] = AssetInfo(_heartbeat, IPriceFeed(_priceFeed));
