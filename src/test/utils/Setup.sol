@@ -4,10 +4,11 @@ pragma solidity ^0.8.18;
 import "forge-std/console2.sol";
 import {ExtendedTest} from "./ExtendedTest.sol";
 
+import {IStrategy} from "@tokenized-strategy/interfaces/IStrategy.sol";
 import {PriceProvider} from "../../PriceProvider.sol";
 import {LiquityV2CarryTradeStrategy as Strategy, ERC20} from "../../Strategy.sol";
 import {StrategyFactory} from "../../StrategyFactory.sol";
-import {IStrategy, IStrategyInterface} from "../../interfaces/IStrategyInterface.sol";
+import {IStrategyInterface} from "../../interfaces/IStrategyInterface.sol";
 import {IHintHelpers} from "../../interfaces/IHintHelpers.sol";
 import {ITroveManager} from "../../interfaces/ITroveManager.sol";
 import {ISortedTroves} from "../../interfaces/ISortedTroves.sol";
@@ -77,7 +78,7 @@ contract Setup is ExtendedTest, IEvents {
     uint256 public profitMaxUnlockTime = 10 days;
 
     // Amount strategist deposits after deployment to open a trove
-    uint256 public initialStrategistDeposit = 2 ether;
+    uint256 public initialStrategistDeposit = 3 ether;
 
     // Constants from the Strategy
     uint256 public constant ETH_GAS_COMPENSATION = 0.0375 ether;
@@ -173,7 +174,9 @@ contract Setup is ExtendedTest, IEvents {
         depositIntoStrategy(_strategy, _user, _amount);
     }
 
-    function mockLenderEarnInterest(uint256 _interestAmount) public {
+    function mockLenderEarnInterest(uint256 _amountDeposited) public {
+        uint256 _amountInUsd = _amountDeposited * priceProvider.getPrice(address(asset)) / 1e18;
+        uint256 _interestAmount = _amountInUsd * 1 / 100; // 1% interest
         airdrop(borrowToken, address(lenderVault), _interestAmount);
     }
 

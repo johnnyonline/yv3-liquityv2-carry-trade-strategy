@@ -27,36 +27,48 @@ contract OperationTest is Setup {
 
         assertEq(strategy.totalAssets(), _strategistDeposit, "!strategistTotalAssets");
 
+        uint256 targetLTV = (strategy.getLiquidateCollateralFactor() * strategy.targetLTVMultiplier()) / MAX_BPS;
+
         // Deposit into strategy
         mintAndDepositIntoStrategy(strategy, user, _amount);
 
         assertEq(strategy.totalAssets(), _amount + _strategistDeposit, "!totalAssets");
+        assertRelApproxEq(strategy.getCurrentLTV(), targetLTV, 1000);
+        assertApproxEq(strategy.balanceOfCollateral(), _amount + _strategistDeposit, 3, "!balanceOfCollateral");
+        assertRelApproxEq(strategy.balanceOfDebt(), strategy.balanceOfLentAssets(), 1000);
 
         // Earn Interest
-        // skip(1 days);
-        mockLenderEarnInterest((_amount + _strategistDeposit) * 2000 * 1e18 / 1e18 * 5 / 100); // @todo -- here -- give interest to the lender strategy
-        skip(strategy.profitMaxUnlockTime());
-        console2.log("totalAssets", strategy.totalAssets());
-        // 2000000000000010499
-        // 2000000000000010499
+        mockLenderEarnInterest(_amount + _strategistDeposit);
 
         // Report profit
         vm.prank(keeper);
         (uint256 profit, uint256 loss) = strategy.report();
 
-        // // Check return Values
-        // assertGe(profit, 0, "!profit");
-        // assertEq(loss, 0, "!loss");
+        // Check return Values
+        assertGe(profit, 0, "!profit");
+        assertEq(loss, 0, "!loss");
 
-        // skip(strategy.profitMaxUnlockTime());
+        uint256 balanceBefore = asset.balanceOf(user);
 
-        // uint256 balanceBefore = asset.balanceOf(user);
+        // Withdraw all funds
+        vm.prank(user);
+        strategy.redeem(_amount, user, user);
 
-        // // Withdraw all funds
-        // vm.prank(user);
-        // strategy.redeem(_amount, user, user);
+        assertGe(asset.balanceOf(user), balanceBefore + _amount, "!final balance");
 
-        // assertGe(asset.balanceOf(user), balanceBefore + _amount, "!final balance");
+        balanceBefore = asset.balanceOf(strategist);
+
+        // Shutdown the strategy (can't repay entire debt without)
+        vm.startPrank(emergencyAdmin);
+        strategy.shutdownStrategy();
+        strategy.emergencyWithdraw(type(uint256).max);
+        vm.stopPrank();
+
+        // Strategist withdraws all funds
+        vm.prank(strategist);
+        strategy.redeem(_strategistDeposit, strategist, strategist, 0);
+
+        assertGe(asset.balanceOf(strategist), balanceBefore + _strategistDeposit, "!final balance");
     }
 
     function test_profitableReport(uint256 _amount, uint16 _profitFactor) public {

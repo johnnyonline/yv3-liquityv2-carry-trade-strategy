@@ -16,10 +16,10 @@ import {BaseLenderBorrower, Math} from "./BaseLenderBorrower.sol";
 // 2. borrow token -- USA.d
 // 3. lender vault -- yvLiquityV2SP
 // @dev -- stratagiest will need to deploy enough funds to open a trove after deployment
-// @dev -- last withdrawal may be stuck until a shutdown (due to Liquity's minimum debt requirement)
+// @dev -- last withdrawal will be stuck until a shutdown (due to Liquity's minimum debt requirement)
 // @dev -- will probably not use a factory here -- deploy manually
 // @dev -- reporting will be blocked by healthCheck after a redemption/liquidation, until the auction is complete
-// @dev -- Should not set `leaveDebtBehind` to True since it could break `_liquidatePosition` bc of no atomic swap. instead, if needed, buy borrow token manually
+// @dev -- Should set `leaveDebtBehind` to True since otherwise it could break `_liquidatePosition` bc of no atomic swap. instead, if needed, buy borrow token manually
 contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     using SafeERC20 for ERC20;
 
@@ -108,6 +108,10 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
 
         BORROWER_OPERATIONS = addressesRegistry_.borrowerOperations();
         TROVE_MANAGER = addressesRegistry_.troveManager();
+
+        // NOTE: Never want to `_buyBorrowToken()` on `_liquidatePosition()` bc no atomic swap
+        //       Instead, if needed, buy borrow token manually
+        leaveDebtBehind = true;
 
         asset.forceApprove(address(BORROWER_OPERATIONS), type(uint256).max);
         WETH.forceApprove(address(BORROWER_OPERATIONS), type(uint256).max);
