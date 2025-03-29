@@ -12,6 +12,7 @@ import {IStrategyInterface} from "../../interfaces/IStrategyInterface.sol";
 import {IHintHelpers} from "../../interfaces/IHintHelpers.sol";
 import {ITroveManager} from "../../interfaces/ITroveManager.sol";
 import {ISortedTroves} from "../../interfaces/ISortedTroves.sol";
+import {IBorrowerOperations} from "../../interfaces/IBorrowerOperations.sol";
 
 import {SavingsBoldMock} from "../mocks/SavingsBoldMock.sol";
 
@@ -31,6 +32,7 @@ contract Setup is ExtendedTest, IEvents {
     // Fork contracts
     // liquity v2.1 WETH
     address public addressesRegistry = 0x38e1F07b954cFaB7239D7acab49997FBaAD96476;
+    address public borrowerOperations = 0x0B995602B5a797823f92027E8b40c0F2D97Aff1C;
     address public troveManager = 0x81D78814DF42DA2caB0E8870C477bC3Ed861DE66;
     address public hintHelpers = 0xe3BB97EE79aC4BdFc0c30A95aD82c243c9913aDa;
     address public sortedTroves = 0x879474Cfbb980fB6899aaaA9b5D5EE14fFbF85A9;
@@ -70,19 +72,20 @@ contract Setup is ExtendedTest, IEvents {
     uint256 public decimals;
     uint256 public MAX_BPS = 10_000;
 
-    // Fuzz from $0.01 of 1e6 stable coins up to 1 trillion of a 1e18 coin
-    uint256 public maxFuzzAmount = 1e30;
+    // Fuzz from $0.01 of 1e6 stable coins up to 1m of a 1e18 coin
+    uint256 public maxFuzzAmount = 1_000_000 * 1e18;
     uint256 public minFuzzAmount = 10_000;
 
     // Default profit max unlock time is set for 10 days
     uint256 public profitMaxUnlockTime = 10 days;
 
     // Amount strategist deposits after deployment to open a trove
-    uint256 public initialStrategistDeposit = 3 ether;
+    uint256 public initialStrategistDeposit = 2 ether;
 
     // Constants from the Strategy
     uint256 public constant ETH_GAS_COMPENSATION = 0.0375 ether;
     uint256 private constant MIN_ANNUAL_INTEREST_RATE = 1e18 / 100 / 2; // 0.5%
+    uint256 private constant MIN_DEBT = 2_000 * 1e18;
 
     function setUp() public virtual {
         _setTokenAddrs();
@@ -105,6 +108,8 @@ contract Setup is ExtendedTest, IEvents {
         strategy = IStrategyInterface(setUpStrategy());
 
         factory = strategy.FACTORY();
+
+        _lowerTCR(); // add lots of collateral and borrow almost nothing to lower the Trove Collateral Ratio
 
         // label all the used addresses for traces
         vm.label(keeper, "keeper");
@@ -258,5 +263,31 @@ contract Setup is ExtendedTest, IEvents {
         } else if (y != 0) {
             z = 1;
         }
+    }
+
+    function _lowerTCR() private {
+        address sugardaddy = address(42069);
+        uint256 reallyreallybigamount = 1_000_000 ether;
+        airdrop(asset, sugardaddy, reallyreallybigamount);
+        uint256 collAmount = asset.balanceOf(sugardaddy);
+        airdrop(ERC20(tokenAddrs["WETH"]), sugardaddy, ETH_GAS_COMPENSATION);
+        (uint256 upperHint, uint256 lowerHint) = _findHints();
+        vm.startPrank(sugardaddy);
+        ERC20(tokenAddrs["WETH"]).approve(borrowerOperations, type(uint256).max);
+        asset.approve(borrowerOperations, type(uint256).max);
+        IBorrowerOperations(borrowerOperations).openTrove(
+            sugardaddy, // owner
+            0, // ownerIndex
+            collAmount,
+            MIN_DEBT, // boldAmount
+            upperHint,
+            lowerHint,
+            MIN_ANNUAL_INTEREST_RATE, // annualInterestRate
+            type(uint256).max, // maxUpfrontFee
+            address(0), // addManager
+            address(0), // removeManager
+            address(0) // receiver
+        );
+        vm.stopPrank();
     }
 }

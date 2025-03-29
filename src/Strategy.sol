@@ -324,10 +324,10 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
         if (_borrowTokenStillOwed > 0) {
             uint256 _maxAssetBalance = _fromUsd(_toUsd(_borrowTokenStillOwed, borrowToken), address(asset));
             if (_maxAssetBalance <= DUST_THRESHOLD) return;
-
+            uint256 _toAuction = _maxAssetBalance * (MAX_BPS + slippage) / MAX_BPS;
             // NOTE: Using the auction here could break `_liquidatePosition`
-            _setAuctionStartingPrice(_maxAssetBalance, address(ASSET_TO_BORROW_AUCTION), address(asset));
-            asset.safeTransfer(address(ASSET_TO_BORROW_AUCTION), _maxAssetBalance);
+            _setAuctionStartingPrice(_toAuction, address(ASSET_TO_BORROW_AUCTION), address(asset));
+            asset.safeTransfer(address(ASSET_TO_BORROW_AUCTION), _toAuction);
             ASSET_TO_BORROW_AUCTION.kick(address(asset));
         }
     }

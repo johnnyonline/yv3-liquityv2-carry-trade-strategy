@@ -5,6 +5,7 @@ import "forge-std/console2.sol";
 import {Setup, ERC20, IStrategyInterface} from "./utils/Setup.sol";
 
 contract OperationTest is Setup {
+    error NotEnoughBoldBalance();
     function setUp() public virtual override {
         super.setUp();
     }
@@ -23,22 +24,23 @@ contract OperationTest is Setup {
         vm.assume(_amount > minFuzzAmount && _amount < maxFuzzAmount);
 
         // Strategist makes initial deposit and opens a trove
-        uint256 _strategistDeposit = strategistDepositAndOpenTrove();
+        uint256 strategistDeposit = strategistDepositAndOpenTrove();
 
-        assertEq(strategy.totalAssets(), _strategistDeposit, "!strategistTotalAssets");
+        assertEq(strategy.totalAssets(), strategistDeposit, "!strategistTotalAssets");
 
         uint256 targetLTV = (strategy.getLiquidateCollateralFactor() * strategy.targetLTVMultiplier()) / MAX_BPS;
 
         // Deposit into strategy
         mintAndDepositIntoStrategy(strategy, user, _amount);
 
-        assertEq(strategy.totalAssets(), _amount + _strategistDeposit, "!totalAssets");
+        checkStrategyTotals(strategy, _amount + strategistDeposit, _amount + strategistDeposit, 0);
+        assertEq(strategy.totalAssets(), _amount + strategistDeposit, "!totalAssets");
         assertRelApproxEq(strategy.getCurrentLTV(), targetLTV, 1000);
-        assertApproxEq(strategy.balanceOfCollateral(), _amount + _strategistDeposit, 3, "!balanceOfCollateral");
+        assertApproxEq(strategy.balanceOfCollateral(), _amount + strategistDeposit, 3, "!balanceOfCollateral");
         assertRelApproxEq(strategy.balanceOfDebt(), strategy.balanceOfLentAssets(), 1000);
 
         // Earn Interest
-        mockLenderEarnInterest(_amount + _strategistDeposit);
+        mockLenderEarnInterest(_amount + strategistDeposit);
 
         // Report profit
         vm.prank(keeper);
@@ -66,9 +68,99 @@ contract OperationTest is Setup {
 
         // Strategist withdraws all funds
         vm.prank(strategist);
-        strategy.redeem(_strategistDeposit, strategist, strategist, 0);
+        strategy.redeem(strategistDeposit, strategist, strategist, 0);
 
-        assertGe(asset.balanceOf(strategist), balanceBefore + _strategistDeposit, "!final balance");
+        assertGe(asset.balanceOf(strategist), balanceBefore + strategistDeposit, "!final balance");
+    }
+
+    function test_operation_lostLentAssets(uint256 _amount) public {
+        vm.assume(_amount > 0.1 ether && _amount < maxFuzzAmount);
+
+        // Strategist makes initial deposit and opens a trove
+        uint256 strategistDeposit = strategistDepositAndOpenTrove();
+
+        assertEq(strategy.totalAssets(), strategistDeposit, "!strategistTotalAssets");
+
+        uint256 targetLTV = (strategy.getLiquidateCollateralFactor() * strategy.targetLTVMultiplier()) / MAX_BPS;
+
+        // Deposit into strategy
+        mintAndDepositIntoStrategy(strategy, user, _amount);
+
+        checkStrategyTotals(strategy, _amount + strategistDeposit, _amount + strategistDeposit, 0);
+        assertEq(strategy.totalAssets(), _amount + strategistDeposit, "!totalAssets");
+        assertRelApproxEq(strategy.getCurrentLTV(), targetLTV, 1000);
+        assertApproxEq(strategy.balanceOfCollateral(), _amount + strategistDeposit, 3, "!balanceOfCollateral");
+        assertRelApproxEq(strategy.balanceOfDebt(), strategy.balanceOfLentAssets(), 1000);
+
+        uint256 vaultLoss = lenderVault.totalAssets() * 5 / 100; // 5% loss
+        vm.prank(address(lenderVault));
+        ERC20(borrowToken).transfer(management, vaultLoss);
+
+        // Revert on health check
+        vm.prank(keeper);
+        vm.expectRevert("healthCheck");
+        strategy.report();
+
+        // Set health check to accept loss
+        vm.prank(management);
+        strategy.setLossLimitRatio(5_000); // 50% loss
+
+        // Report loss
+        vm.prank(keeper);
+        (uint256 profit, uint256 loss) = strategy.report();
+
+        // Check return Values
+        assertEq(profit, 0, "!profit");
+        assertGe(loss, 0, "!loss");
+
+        // Shutdown the strategy (can't repay entire debt without)
+        vm.startPrank(emergencyAdmin);
+        strategy.shutdownStrategy();
+
+        vm.expectRevert(NotEnoughBoldBalance.selector); // Not enough BOLD to repay the loan
+        strategy.emergencyWithdraw(type(uint256).max);
+
+        // Withdraw enough collateral to repay the loan
+        uint256 collToSell = strategy.balanceOfCollateral() * 25 / 100;
+        strategy.manualWithdraw(address(0), collToSell);
+
+        // Sell collateral to buy debt
+        strategy.buyBorrowToken();
+
+        // Buying just enough to repay the loan
+        uint256 toAuction = asset.balanceOf(strategy.ASSET_TO_BORROW_AUCTION());
+        assertLe(toAuction, collToSell, "!collToSell");
+
+        uint256 toAirdrop = toAuction * priceProvider.getPrice(address(asset)) / 1e18;
+        airdrop(borrowToken, address(strategy), toAirdrop);
+
+        strategy.emergencyWithdraw(type(uint256).max);
+
+        strategy.sellBorrowToken(type(uint256).max);
+        toAuction = borrowToken.balanceOf(strategy.BORROW_TO_ASSET_AUCTION());
+        assertGt(toAuction, 0, "!borrowToSell");
+        toAirdrop = toAuction * priceProvider.getPrice(address(borrowToken)) / 1e18;
+        airdrop(asset, address(strategy), toAirdrop);
+
+        vm.stopPrank();
+
+        uint256 balanceBefore = asset.balanceOf(user);
+
+        // Withdraw all funds
+        vm.prank(user);
+        strategy.redeem(_amount, user, user);
+
+        assertLt(
+            asset.balanceOf(user),
+            balanceBefore + _amount,
+            "!final balance"
+        );
+        assertRelApproxEq(asset.balanceOf(user), balanceBefore + _amount, 2e17); // 10% loss max // @todo -- here
+
+        vm.prank(strategist);
+        strategy.redeem(strategistDeposit - 1, strategist, strategist);
+
+        assertLt(asset.balanceOf(strategist), balanceBefore + strategistDeposit, "!final balance");
     }
 
     function test_profitableReport(uint256 _amount, uint16 _profitFactor) public {
