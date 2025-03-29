@@ -182,7 +182,9 @@ contract Setup is ExtendedTest, IEvents {
     function mockLenderEarnInterest(uint256 _amountDeposited) public {
         uint256 _amountInUsd = _amountDeposited * priceProvider.getPrice(address(asset)) / 1e18;
         uint256 _interestAmount = _amountInUsd * 1 / 100; // 1% interest
+        uint256 _totalAssetsBefore = lenderVault.totalAssets();
         airdrop(borrowToken, address(lenderVault), _interestAmount);
+        require(lenderVault.totalAssets() > _totalAssetsBefore, "No interest earned");
     }
 
     // For checking the amounts in the strategy
