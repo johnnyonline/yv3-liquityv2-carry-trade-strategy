@@ -13,6 +13,7 @@ import {IHintHelpers} from "../../interfaces/IHintHelpers.sol";
 import {ITroveManager} from "../../interfaces/ITroveManager.sol";
 import {ISortedTroves} from "../../interfaces/ISortedTroves.sol";
 import {IBorrowerOperations} from "../../interfaces/IBorrowerOperations.sol";
+import {ICollateralRegistry} from "../../interfaces/ICollateralRegistry.sol";
 
 import {SavingsBoldMock} from "../mocks/SavingsBoldMock.sol";
 
@@ -31,6 +32,7 @@ contract Setup is ExtendedTest, IEvents {
 
     // Fork contracts
     // liquity v2.1 WETH
+    address public collateralRegistry = 0xd99dE73b95236F69A559117ECD6F519Af780F3f7;
     address public addressesRegistry = 0x38e1F07b954cFaB7239D7acab49997FBaAD96476;
     address public borrowerOperations = 0x0B995602B5a797823f92027E8b40c0F2D97Aff1C;
     address public troveManager = 0x81D78814DF42DA2caB0E8870C477bC3Ed861DE66;
@@ -291,5 +293,20 @@ contract Setup is ExtendedTest, IEvents {
             address(0) // receiver
         );
         vm.stopPrank();
+    }
+
+    function simulateCollateralRedemption(uint256 _amount) internal {
+        address _redeemer = address(420420);
+        airdrop(borrowToken, _redeemer, _amount);
+        vm.prank(_redeemer);
+        ICollateralRegistry(collateralRegistry).redeemCollateral(
+            _amount,
+            0, // max iterations
+            1_000_000_000_000_000_000 // max fee percentage
+        );
+        require(
+            uint8(ITroveManager(troveManager).getTroveStatus(strategy.troveId())) == uint8(ITroveManager.Status.zombie),
+            "Trove not active420"
+        );
     }
 }
