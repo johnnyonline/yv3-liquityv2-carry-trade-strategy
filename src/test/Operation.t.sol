@@ -295,7 +295,7 @@ contract OperationTest is Setup {
         mintAndDepositIntoStrategy(strategy, user, _amount);
 
         checkStrategyTotals(strategy, _amount + strategistDeposit, _amount + strategistDeposit, 0);
-
+        assertRelApproxEq(strategy.getCurrentLTV(), targetLTV, 1000);
         assertEq(strategy.totalAssets(), _amount + strategistDeposit, "!totalAssets");
 
         uint256 toAirdrop = ((_amount + strategistDeposit) * _profitFactor) / MAX_BPS;
@@ -470,11 +470,15 @@ contract OperationTest is Setup {
         assertApproxEq(strategy.balanceOfCollateral(), _amount + strategistDeposit, 3, "!balanceOfCollateral");
         assertRelApproxEq(strategy.balanceOfDebt(), strategy.balanceOfLentAssets(), 1000);
 
+        uint256 debtBefore = strategy.balanceOfDebt();
+
         // Simulate a redemption that leads to a zombie trove
         simulateCollateralRedemption(strategy.balanceOfDebt() * 10); // not super tight... but gets the job done for now
 
+        // Check debt decreased
+        assertLt(strategy.balanceOfDebt(), debtBefore, "!debt");
+
         // @todo -- here
-        // 2. Check debt decreased
         // 3. Kick rewards to get rid of borrow token back to asset
         // 4. Check we revert on withdraw/report/tend
         // 5. Check we dont revert on deposit
