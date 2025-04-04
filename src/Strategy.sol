@@ -12,6 +12,7 @@ import {IPriceProvider} from "./interfaces/IPriceProvider.sol";
 import {BaseLenderBorrower, Math} from "./BaseLenderBorrower.sol";
 
 // NOTES:
+// @todo -- tendTrigger -- check position is live
 // 1. asset -- scrvUSD
 // 2. borrow token -- USA.d
 // 3. lender vault -- yvLiquityV2SP
@@ -203,6 +204,35 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     }
 
     // ===============================================================
+    // Public read functions
+    // ===============================================================
+
+    /// @inheritdoc BaseLenderBorrower
+    function getNetBorrowApr(uint256 /* newAmount */ ) public view override returns (uint256) {
+        return TROVE_MANAGER.getLatestTroveData(troveId).annualInterestRate;
+    }
+
+    /// @inheritdoc BaseLenderBorrower
+    function getNetRewardApr(uint256 /* newAmount */ ) public pure override returns (uint256) {
+        return WAD; // Assuming reward APR will never be less than borrowing APR (0.5%)
+    }
+
+    /// @inheritdoc BaseLenderBorrower
+    function getLiquidateCollateralFactor() public view override returns (uint256) {
+        return WAD * WAD / BORROWER_OPERATIONS.MCR();
+    }
+
+    /// @inheritdoc BaseLenderBorrower
+    function balanceOfCollateral() public view override returns (uint256) {
+        return TROVE_MANAGER.getLatestTroveData(troveId).entireColl;
+    }
+
+    /// @inheritdoc BaseLenderBorrower
+    function balanceOfDebt() public view override returns (uint256) {
+        return TROVE_MANAGER.getLatestTroveData(troveId).entireDebt;
+    }
+
+    // ===============================================================
     // Internal write functions
     // ===============================================================
 
@@ -245,6 +275,39 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
         if (_balance > 0) WETH.safeTransfer(msg.sender, _balance);
     }
 
+    /// @inheritdoc BaseLenderBorrower
+    function _buyBorrowToken() internal override {
+        uint256 _borrowTokenStillOwed = borrowTokenOwedBalance();
+        if (_borrowTokenStillOwed > 0) {
+            uint256 _maxAssetBalance = _fromUsd(_toUsd(_borrowTokenStillOwed, borrowToken), address(asset));
+            if (_maxAssetBalance <= DUST_THRESHOLD) return;
+            uint256 _toAuction = _maxAssetBalance * (MAX_BPS + slippage) / MAX_BPS;
+            // NOTE: Using the auction here could break `_liquidatePosition`
+            _setAuctionStartingPrice(_toAuction, address(ASSET_TO_BORROW_AUCTION), address(asset));
+            asset.safeTransfer(address(ASSET_TO_BORROW_AUCTION), _toAuction);
+            ASSET_TO_BORROW_AUCTION.kick(address(asset));
+        }
+    }
+
+    /// @inheritdoc BaseLenderBorrower
+    function _sellBorrowToken(uint256 _amount) internal override {
+        _setAuctionStartingPrice(_amount, address(BORROW_TO_ASSET_AUCTION), borrowToken);
+        ERC20(borrowToken).safeTransfer(address(BORROW_TO_ASSET_AUCTION), _amount);
+        BORROW_TO_ASSET_AUCTION.kick(borrowToken);
+    }
+
+    /// @notice Set the auction starting price
+    /// @dev Should help setting the auction faster
+    /// @param _toAuction Amount to auction
+    /// @param _auction Auction contract
+    /// @param _token Token to auction
+    function _setAuctionStartingPrice(uint256 _toAuction, address _auction, address _token) internal {
+        uint256 _price = _getPrice(_token);
+        uint256 _available = ERC20(_token).balanceOf(_auction) + _toAuction;
+        // slither-disable-next-line divide-before-multiply
+        IAuction(_auction).setStartingPrice(_available * _price / WAD * auctionBufferPercentage / WAD);
+    }
+
     // ===============================================================
     // Internal view functions
     // ===============================================================
@@ -280,35 +343,6 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     }
 
     /// @inheritdoc BaseLenderBorrower
-    function getNetBorrowApr(uint256 /* newAmount */ ) public view override returns (uint256) {
-        return TROVE_MANAGER.getLatestTroveData(troveId).annualInterestRate;
-    }
-
-    /// @inheritdoc BaseLenderBorrower
-    function getNetRewardApr(uint256 /* newAmount */ ) public pure override returns (uint256) {
-        return WAD; // Assuming reward APR will never be less than borrowing APR (0.5%)
-    }
-
-    /// @inheritdoc BaseLenderBorrower
-    function getLiquidateCollateralFactor() public view override returns (uint256) {
-        return WAD * WAD / BORROWER_OPERATIONS.MCR();
-    }
-
-    /// @inheritdoc BaseLenderBorrower
-    function balanceOfCollateral() public view override returns (uint256) {
-        return TROVE_MANAGER.getLatestTroveData(troveId).entireColl;
-    }
-
-    /// @inheritdoc BaseLenderBorrower
-    function balanceOfDebt() public view override returns (uint256) {
-        return TROVE_MANAGER.getLatestTroveData(troveId).entireDebt;
-    }
-
-    // ===============================================================
-    // Harvest / Token conversions
-    // ===============================================================
-
-    /// @inheritdoc BaseLenderBorrower
     function _claimRewards() internal pure override {
         return; // No rewards to claim
     }
@@ -319,35 +353,8 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     }
 
     /// @inheritdoc BaseLenderBorrower
-    function _buyBorrowToken() internal override {
-        uint256 _borrowTokenStillOwed = borrowTokenOwedBalance();
-        if (_borrowTokenStillOwed > 0) {
-            uint256 _maxAssetBalance = _fromUsd(_toUsd(_borrowTokenStillOwed, borrowToken), address(asset));
-            if (_maxAssetBalance <= DUST_THRESHOLD) return;
-            uint256 _toAuction = _maxAssetBalance * (MAX_BPS + slippage) / MAX_BPS;
-            // NOTE: Using the auction here could break `_liquidatePosition`
-            _setAuctionStartingPrice(_toAuction, address(ASSET_TO_BORROW_AUCTION), address(asset));
-            asset.safeTransfer(address(ASSET_TO_BORROW_AUCTION), _toAuction);
-            ASSET_TO_BORROW_AUCTION.kick(address(asset));
-        }
-    }
-
-    /// @inheritdoc BaseLenderBorrower
-    function _sellBorrowToken(uint256 _amount) internal override {
-        _setAuctionStartingPrice(_amount, address(BORROW_TO_ASSET_AUCTION), borrowToken);
-        ERC20(borrowToken).safeTransfer(address(BORROW_TO_ASSET_AUCTION), _amount);
-        BORROW_TO_ASSET_AUCTION.kick(borrowToken);
-    }
-
-    /// @notice Set the auction starting price
-    /// @dev Should help setting the auction faster
-    /// @param _toAuction Amount to auction
-    /// @param _auction Auction contract
-    /// @param _token Token to auction
-    function _setAuctionStartingPrice(uint256 _toAuction, address _auction, address _token) internal {
-        uint256 _price = _getPrice(_token);
-        uint256 _available = ERC20(_token).balanceOf(_auction) + _toAuction;
-        // slither-disable-next-line divide-before-multiply
-        IAuction(_auction).setStartingPrice(_available * _price / WAD * auctionBufferPercentage / WAD);
+    function _tendTrigger() internal view override returns (bool) {
+        if (TROVE_MANAGER.getTroveStatus(troveId) != ITroveManager.Status.active) return false;
+        return BaseLenderBorrower._tendTrigger();
     }
 }

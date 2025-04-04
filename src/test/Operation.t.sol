@@ -478,47 +478,85 @@ contract OperationTest is Setup {
         // Check debt decreased
         assertLt(strategy.balanceOfDebt(), debtBefore, "!debt");
 
-        // @todo -- here
-        // 3. Kick rewards to get rid of borrow token back to asset
-        // 4. Check we revert on withdraw/report/tend
-        // 5. Check we dont revert on deposit
-        // 6. adjustZombieTrove
-        // 7. Report profit?
-        // Close trove
+        // Kick rewards to get rid of borrow token back to asset
+        vm.prank(keeper);
+        strategy.kickRewards();
+        uint256 toAuction = borrowToken.balanceOf(strategy.BORROW_TO_ASSET_AUCTION());
+        assertGt(toAuction, 0, "!borrowToSell");
+        uint256 toAirdrop = toAuction * 1e18 / priceProvider.getPrice(address(asset));
+        airdrop(asset, address(strategy), toAirdrop);
 
-        // // Earn Interest
-        // mockLenderEarnInterest(_amount + strategistDeposit); // 1% interest
+        // Check we revert on report
+        vm.prank(keeper);
+        vm.expectRevert();
+        strategy.report();
 
-        // // Report profit
-        // vm.prank(keeper);
-        // (uint256 profit, uint256 loss) = strategy.report();
+        // Position zombie should be false
+        (bool trigger, ) = strategy.tendTrigger();
+        assertFalse(trigger, "zombieTrigger");
 
-        // // Check return Values
-        // assertGe(profit, 0, "!profit");
-        // assertEq(loss, 0, "!loss");
+        // Check we revert on report anyways
+        vm.prank(keeper);
+        vm.expectRevert();
+        strategy.report();
 
-        // uint256 balanceBefore = asset.balanceOf(user);
+        // Check we can deposit and withdraw (as long as there's enough idle to satisfy the withdrawal)
+        address user2 = address(6969);
+        uint256 balanceBefore = asset.balanceOf(user2);
+        mintAndDepositIntoStrategy(strategy, user2, _amount);
+        vm.prank(user2);
+        strategy.redeem(_amount, user2, user2);
+        assertEq(asset.balanceOf(user2), balanceBefore + _amount, "!final balance");
+        assertEq(strategy.balanceOf(user2), 0, "!final shares");
 
-        // // Withdraw all funds
-        // vm.prank(user);
-        // strategy.redeem(_amount, user, user);
+        // AdjustZombieTrove
+        (uint256 _upperHint, uint256 _lowerHint) = findHints();
+        vm.expectRevert("!keeper");
+        strategy.adjustZombieTrove(_upperHint, _lowerHint);
+        vm.prank(keeper);
+        strategy.adjustZombieTrove(_upperHint, _lowerHint);
 
-        // assertGe(asset.balanceOf(user), balanceBefore + _amount, "!final balance");
+        // Report profit
+        vm.prank(keeper);
+        (uint256 profit, uint256 loss) = strategy.report();
 
-        // balanceBefore = asset.balanceOf(strategist);
+        // Check return Values
+        assertGt(profit, 0, "!profit"); // If no price swinges, being redeemed is actually profitable
+        assertEq(loss, 0, "!loss");
 
-        // // Shutdown the strategy (can't repay entire debt without)
-        // vm.startPrank(emergencyAdmin);
-        // strategy.shutdownStrategy();
-        // strategy.emergencyWithdraw(type(uint256).max);
-        // vm.stopPrank();
+        balanceBefore = asset.balanceOf(user);
 
-        // // Strategist withdraws all funds
-        // vm.prank(strategist);
-        // strategy.redeem(strategistDeposit, strategist, strategist, 0);
+        // Withdraw all funds
+        vm.prank(user);
+        strategy.redeem(_amount, user, user);
 
-        // assertGe(asset.balanceOf(strategist), balanceBefore + strategistDeposit, "!final balance");
+        assertGe(asset.balanceOf(user), balanceBefore + _amount, "!final balance");
+
+        balanceBefore = asset.balanceOf(strategist);
+
+        // Earn Interest
+        mockLenderEarnInterest(_amount + strategistDeposit); // 1% interest
+
+        // Report profit
+        vm.prank(keeper);
+        (profit, loss) = strategy.report();
+
+        // Check return Values
+        assertGt(profit, 0, "!profit");
+        assertEq(loss, 0, "!loss");
+
+        // Shutdown the strategy (can't repay entire debt without)
+        vm.startPrank(emergencyAdmin);
+        strategy.shutdownStrategy();
+        strategy.emergencyWithdraw(type(uint256).max);
+        vm.stopPrank();
+
+        // Strategist withdraws all funds
+        vm.prank(strategist);
+        strategy.redeem(strategistDeposit, strategist, strategist, 0);
+
+        assertGe(asset.balanceOf(strategist), balanceBefore + strategistDeposit, "!final balance");
     }
 
-    // @todo -- here -- test redemption/open trove after liquidation
+    // @todo -- here -- test redemption (not to zombie)/open trove after liquidation
 }

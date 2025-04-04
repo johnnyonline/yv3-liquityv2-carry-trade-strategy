@@ -161,7 +161,7 @@ contract Setup is ExtendedTest, IEvents {
         ERC20(tokenAddrs["WETH"]).approve(address(strategy), ETH_GAS_COMPENSATION);
 
         // Open Trove
-        (uint256 _upperHint, uint256 _lowerHint) = _findHints();
+        (uint256 _upperHint, uint256 _lowerHint) = findHints();
         vm.prank(management);
         strategy.openTrove(_upperHint, _lowerHint, strategist);
 
@@ -243,7 +243,7 @@ contract Setup is ExtendedTest, IEvents {
         tokenAddrs["BOLD"] = 0xb01dd87B29d187F3E3a4Bf6cdAebfb97F3D9aB98;
     }
 
-    function _findHints() private view returns (uint256 _upperHint, uint256 _lowerHint) {
+    function findHints() internal view returns (uint256 _upperHint, uint256 _lowerHint) {
         // Find approx hint (off-chain)
         (uint256 _approxHint,,) = IHintHelpers(hintHelpers).getApproxHint({
             _collIndex: branchIndex,
@@ -275,7 +275,7 @@ contract Setup is ExtendedTest, IEvents {
         airdrop(asset, sugardaddy, reallyreallybigamount);
         uint256 collAmount = asset.balanceOf(sugardaddy);
         airdrop(ERC20(tokenAddrs["WETH"]), sugardaddy, ETH_GAS_COMPENSATION);
-        (uint256 upperHint, uint256 lowerHint) = _findHints();
+        (uint256 upperHint, uint256 lowerHint) = findHints();
         vm.startPrank(sugardaddy);
         ERC20(tokenAddrs["WETH"]).approve(borrowerOperations, type(uint256).max);
         asset.approve(borrowerOperations, type(uint256).max);
