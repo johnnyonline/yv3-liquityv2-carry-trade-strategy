@@ -137,12 +137,13 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     /// @param _lowerHint Lower hint
     /// @param _sugardaddy ty sugardaddy
     function openTrove(uint256 _upperHint, uint256 _lowerHint, address _sugardaddy) external onlyManagement {
-        require(troveId == 0 || TROVE_MANAGER.getTroveStatus(troveId) == ITroveManager.Status.closedByLiquidation, "open");
+        uint256 _troveId = troveId;
+        require(_troveId == 0 || TROVE_MANAGER.getTroveStatus(_troveId) == ITroveManager.Status.closedByLiquidation, "open");
         uint256 _collAmount = balanceOfAsset();
         WETH.safeTransferFrom(_sugardaddy, address(this), ETH_GAS_COMPENSATION);
         troveId = BORROWER_OPERATIONS.openTrove(
             address(this), // owner
-            0, // ownerIndex
+            block.timestamp, // ownerIndex
             _collAmount,
             MIN_DEBT, // boldAmount
             _upperHint,
@@ -206,6 +207,13 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     // ===============================================================
     // Public read functions
     // ===============================================================
+
+    /// @inheritdoc BaseLenderBorrower
+    function availableWithdrawLimit(address /*_owner*/ ) public view override returns (uint256) {
+        if (TROVE_MANAGER.getTroveStatus(troveId) == ITroveManager.Status.closedByLiquidation) return 0;
+        return BaseLenderBorrower.availableWithdrawLimit(address(this));
+        
+    }
 
     /// @inheritdoc BaseLenderBorrower
     function getNetBorrowApr(uint256 /* newAmount */ ) public view override returns (uint256) {

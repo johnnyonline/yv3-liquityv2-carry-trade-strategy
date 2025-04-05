@@ -14,6 +14,7 @@ import {ITroveManager} from "../../interfaces/ITroveManager.sol";
 import {ISortedTroves} from "../../interfaces/ISortedTroves.sol";
 import {IBorrowerOperations} from "../../interfaces/IBorrowerOperations.sol";
 import {ICollateralRegistry} from "../../interfaces/ICollateralRegistry.sol";
+import {IPriceFeed} from "../../interfaces/IPriceFeed.sol";
 
 import {SavingsBoldMock} from "../mocks/SavingsBoldMock.sol";
 
@@ -43,6 +44,7 @@ contract Setup is ExtendedTest, IEvents {
     address public clEthUsdOracle = 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419;
     address public clUsdcUsdOracle = 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6;
 
+    // @todo -- use mockcall to clean this
     // uint256 public clEthUsdOracleHeartbeat = 1 hours;
     // uint256 public clUsdcUsdOracleHeartbeat = 24 hours;
     uint256 public clEthUsdOracleHeartbeat = 100 days;
@@ -151,9 +153,9 @@ contract Setup is ExtendedTest, IEvents {
         return address(_strategy);
     }
 
-    function strategistDepositAndOpenTrove() public returns (uint256) {
+    function strategistDepositAndOpenTrove(bool _strategistDeposit) public returns (uint256) {
         // Deposit into strategy
-        mintAndDepositIntoStrategy(strategy, strategist, initialStrategistDeposit);
+        if (_strategistDeposit) mintAndDepositIntoStrategy(strategy, strategist, initialStrategistDeposit);
 
         // Approve gas compensation spending
         airdrop(ERC20(tokenAddrs["WETH"]), strategist, ETH_GAS_COMPENSATION);
@@ -228,7 +230,7 @@ contract Setup is ExtendedTest, IEvents {
     function setUpPriceProvider() public {
         vm.startPrank(management);
         priceProvider.setAssetInfo(clEthUsdOracleHeartbeat, address(asset), clEthUsdOracle);
-        priceProvider.setAssetInfo(clUsdcUsdOracleHeartbeat, address(borrowToken), clUsdcUsdOracle);
+        priceProvider.setAssetInfo(clUsdcUsdOracleHeartbeat, address(borrowToken), clUsdcUsdOracle); // @todo - oracle that always returns 1
         vm.stopPrank();
     }
 
@@ -307,6 +309,29 @@ contract Setup is ExtendedTest, IEvents {
         require(
             uint8(ITroveManager(troveManager).getTroveStatus(strategy.troveId())) == uint8(ITroveManager.Status.zombie),
             "Trove not active420"
+        );
+    }
+
+    function simulateLiquidation() internal {
+        require(
+            uint8(ITroveManager(troveManager).getTroveStatus(strategy.troveId())) == uint8(ITroveManager.Status.active),
+            "Trove not active"
+        );
+        (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound) = IPriceFeed(clEthUsdOracle).latestRoundData();
+        int256 newAnswer = answer / 2;
+        vm.mockCall(
+            clEthUsdOracle,
+            abi.encodeWithSelector(IPriceFeed.latestRoundData.selector),
+            abi.encode(roundId, newAnswer, startedAt, updatedAt, answeredInRound)
+        );
+        (,newAnswer,,,) = IPriceFeed(clEthUsdOracle).latestRoundData();
+        assertEq(newAnswer, answer / 2, "Price not halved");
+        uint256[] memory troveArray = new uint256[](1);
+        troveArray[0] = strategy.troveId();
+        ITroveManager(troveManager).batchLiquidateTroves(troveArray);
+        require(
+            uint8(ITroveManager(troveManager).getTroveStatus(strategy.troveId())) == uint8(ITroveManager.Status.closedByLiquidation),
+            "Trove not liquidated"
         );
     }
 }

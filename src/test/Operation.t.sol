@@ -24,7 +24,7 @@ contract OperationTest is Setup {
         vm.assume(_amount > minFuzzAmount && _amount < maxFuzzAmount);
 
         // Strategist makes initial deposit and opens a trove
-        uint256 strategistDeposit = strategistDepositAndOpenTrove();
+        uint256 strategistDeposit = strategistDepositAndOpenTrove(true);
 
         assertEq(strategy.totalAssets(), strategistDeposit, "!strategistTotalAssets");
 
@@ -77,7 +77,7 @@ contract OperationTest is Setup {
         vm.assume(_amount > minFuzzAmount && _amount < maxFuzzAmount);
 
         // Strategist makes initial deposit and opens a trove
-        uint256 strategistDeposit = strategistDepositAndOpenTrove();
+        uint256 strategistDeposit = strategistDepositAndOpenTrove(true);
 
         assertEq(strategy.totalAssets(), strategistDeposit, "!strategistTotalAssets");
 
@@ -174,7 +174,7 @@ contract OperationTest is Setup {
         uint256 targetLTV = (strategy.getLiquidateCollateralFactor() * strategy.targetLTVMultiplier()) / MAX_BPS;
 
         // Strategist makes initial deposit and opens a trove
-        uint256 strategistDeposit = strategistDepositAndOpenTrove();
+        uint256 strategistDeposit = strategistDepositAndOpenTrove(true);
 
         // Deposit into strategy
         mintAndDepositIntoStrategy(strategy, user, _amount);
@@ -216,7 +216,7 @@ contract OperationTest is Setup {
         uint256 targetLTV = (strategy.getLiquidateCollateralFactor() * strategy.targetLTVMultiplier()) / MAX_BPS;
 
         // Strategist makes initial deposit and opens a trove
-        uint256 strategistDeposit = strategistDepositAndOpenTrove();
+        uint256 strategistDeposit = strategistDepositAndOpenTrove(true);
 
         // Deposit into strategy
         mintAndDepositIntoStrategy(strategy, user, _amount);
@@ -286,7 +286,7 @@ contract OperationTest is Setup {
         uint256 targetLTV = (strategy.getLiquidateCollateralFactor() * strategy.targetLTVMultiplier()) / MAX_BPS;
 
         // Strategist makes initial deposit and opens a trove
-        uint256 strategistDeposit = strategistDepositAndOpenTrove();
+        uint256 strategistDeposit = strategistDepositAndOpenTrove(true);
 
         // Set protocol fee to 0 and perf fee to 10%
         setFees(0, 1_000);
@@ -357,7 +357,7 @@ contract OperationTest is Setup {
         assertTrue(!trigger);
 
         // Strategist makes initial deposit and opens a trove
-        uint256 strategistDeposit = strategistDepositAndOpenTrove();
+        uint256 strategistDeposit = strategistDepositAndOpenTrove(true);
 
         // Deposit into strategy
         mintAndDepositIntoStrategy(strategy, user, _amount);
@@ -427,7 +427,7 @@ contract OperationTest is Setup {
         uint256 targetLTV = (strategy.getLiquidateCollateralFactor() * strategy.targetLTVMultiplier()) / MAX_BPS;
 
         // Strategist makes initial deposit and opens a trove
-        uint256 strategistDeposit = strategistDepositAndOpenTrove();
+        uint256 strategistDeposit = strategistDepositAndOpenTrove(true);
 
         // Deposit into strategy
         mintAndDepositIntoStrategy(strategy, user, _amount);
@@ -455,7 +455,7 @@ contract OperationTest is Setup {
         vm.assume(_amount > minFuzzAmount && _amount < maxFuzzAmount);
 
         // Strategist makes initial deposit and opens a trove
-        uint256 strategistDeposit = strategistDepositAndOpenTrove();
+        uint256 strategistDeposit = strategistDepositAndOpenTrove(true);
 
         assertEq(strategy.totalAssets(), strategistDeposit, "!strategistTotalAssets");
 
@@ -557,6 +557,117 @@ contract OperationTest is Setup {
 
         assertGe(asset.balanceOf(strategist), balanceBefore + strategistDeposit, "!final balance");
     }
+
+    function test_operation_liquidation(uint256 _amount) public {
+        vm.assume(_amount > minFuzzAmount && _amount < maxFuzzAmount);
+
+        // Strategist makes initial deposit and opens a trove
+        uint256 strategistDeposit = strategistDepositAndOpenTrove(true);
+
+        assertEq(strategy.totalAssets(), strategistDeposit, "!strategistTotalAssets");
+
+        uint256 targetLTV = (strategy.getLiquidateCollateralFactor() * strategy.targetLTVMultiplier()) / MAX_BPS;
+
+        // Deposit into strategy
+        mintAndDepositIntoStrategy(strategy, user, _amount);
+
+        checkStrategyTotals(strategy, _amount + strategistDeposit, _amount + strategistDeposit, 0);
+        assertEq(strategy.totalAssets(), _amount + strategistDeposit, "!totalAssets");
+        assertRelApproxEq(strategy.getCurrentLTV(), targetLTV, 1000);
+        assertApproxEq(strategy.balanceOfCollateral(), _amount + strategistDeposit, 3, "!balanceOfCollateral");
+        assertRelApproxEq(strategy.balanceOfDebt(), strategy.balanceOfLentAssets(), 1000);
+
+        // Simulate a liquidation
+        simulateLiquidation();
+
+        // Check debt
+        assertEq(strategy.balanceOfDebt(), 0, "!debt");
+        assertEq(strategy.balanceOfCollateral(), 0, "!collateral");
+        assertEq(strategy.balanceOfAsset(), 0, "!asset");
+        assertGt(strategy.balanceOfLentAssets(), 0, "!lentAssets");
+
+        // Kick rewards to get rid of borrow token back to asset
+        vm.prank(keeper);
+        strategy.kickRewards();
+        uint256 toAuction = borrowToken.balanceOf(strategy.BORROW_TO_ASSET_AUCTION());
+        assertGt(toAuction, 0, "!borrowToSell");
+        uint256 toAirdrop = toAuction * 1e18 / priceProvider.getPrice(address(asset));
+        airdrop(asset, address(strategy), toAirdrop);
+
+        // Check we revert on report (will revert until we re-open trove)
+        vm.prank(keeper);
+        vm.expectRevert();
+        strategy.report();
+
+        // Check we can't withdraw
+        vm.prank(user);
+        vm.expectRevert("ERC4626: redeem more than max"); // blocked by `availableWithdrawLimit()`
+        strategy.redeem(_amount, user, user);
+
+        // Claim any leftover collateral
+        vm.prank(management);
+        vm.expectRevert("CollSurplusPool: No collateral available to claim"); // dumped too hard
+        strategy.claimCollateral();
+
+        uint256 troveIdBefore = strategy.troveId();
+
+        // Re-open trove
+        skip(1); // just to get a new ownerIndex
+        strategistDepositAndOpenTrove(false);
+
+        // Check we got a new troveId
+        assertTrue(strategy.troveId() != troveIdBefore, "!troveId");
+
+        // Allow for loss
+        vm.prank(management);
+        strategy.setLossLimitRatio(5_000); // 50% loss
+
+        // Report loss
+        vm.prank(keeper);
+        (uint256 profit, uint256 loss) = strategy.report(); // @todo -- here -- for some reason we end up with profit. check `balanceOfLentAssets` translation to `balanceOfAsset` makes sense (on kick)
+
+        // Check return Values
+        assertEq(profit, 0, "!profit");
+        assertGt(loss, 0, "!loss"); // Lost bc of liquidation penalty
+        // make sure loss is 5%
+        assertEq(loss, (_amount + strategistDeposit) * 5 / 100, "asd");
+        // assertApproxEq(loss, collateralBefore * 5 / 100, collateralBefore * 5 / 100);
+
+        // balanceBefore = asset.balanceOf(user);
+
+        // // Withdraw all funds
+        // vm.prank(user);
+        // strategy.redeem(_amount, user, user);
+
+        // assertGe(asset.balanceOf(user), balanceBefore + _amount, "!final balance");
+
+        // balanceBefore = asset.balanceOf(strategist);
+
+        // // Earn Interest
+        // mockLenderEarnInterest(_amount + strategistDeposit); // 1% interest
+
+        // // Report profit
+        // vm.prank(keeper);
+        // (profit, loss) = strategy.report();
+
+        // // Check return Values
+        // assertGt(profit, 0, "!profit");
+        // assertEq(loss, 0, "!loss");
+
+        // // Shutdown the strategy (can't repay entire debt without)
+        // vm.startPrank(emergencyAdmin);
+        // strategy.shutdownStrategy();
+        // strategy.emergencyWithdraw(type(uint256).max);
+        // vm.stopPrank();
+
+        // // Strategist withdraws all funds
+        // vm.prank(strategist);
+        // strategy.redeem(strategistDeposit, strategist, strategist, 0);
+
+        // assertGe(asset.balanceOf(strategist), balanceBefore + strategistDeposit, "!final balance");
+    }
+
+    // function test_tendTrigger_liquidation(uint256 _amount) public {
 
     // @todo -- here -- test redemption (not to zombie)/open trove after liquidation
 }
