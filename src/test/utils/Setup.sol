@@ -318,14 +318,14 @@ contract Setup is ExtendedTest, IEvents {
             "Trove not active"
         );
         (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound) = IPriceFeed(clEthUsdOracle).latestRoundData();
-        int256 newAnswer = answer / 2;
+        int256 newAnswer = answer * 70 / 100; // 30% drop
         vm.mockCall(
             clEthUsdOracle,
             abi.encodeWithSelector(IPriceFeed.latestRoundData.selector),
             abi.encode(roundId, newAnswer, startedAt, updatedAt, answeredInRound)
         );
         (,newAnswer,,,) = IPriceFeed(clEthUsdOracle).latestRoundData();
-        assertEq(newAnswer, answer / 2, "Price not halved");
+        assertEq(newAnswer, answer * 70 / 100, "!dump");
         uint256[] memory troveArray = new uint256[](1);
         troveArray[0] = strategy.troveId();
         ITroveManager(troveManager).batchLiquidateTroves(troveArray);

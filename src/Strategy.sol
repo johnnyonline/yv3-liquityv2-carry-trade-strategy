@@ -28,6 +28,9 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     // Storage
     // ===============================================================
 
+    /// @notice Whether block withdrawals after a liquidation
+    bool public blockWithdrawalsAfterLiquidation;
+
     /// @notice Trove ID
     uint256 public troveId;
 
@@ -97,6 +100,7 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
             "!_addressesRegistry"
         );
 
+        blockWithdrawalsAfterLiquidation = true;
         auctionBufferPercentage = MIN_AUCTION_BUFFER_PERCENTAGE;
 
         PRICE_PROVIDER = IPriceProvider(_priceProvider);
@@ -121,6 +125,14 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     // ===============================================================
     // Management functions
     // ===============================================================
+
+    /// @notice Set whether to block withdrawals after a liquidation
+    /// @dev This will potentially be used only when shutting down the strategy after a liquidation
+    /// @dev We want to block by default because we may have auctioned the borrow token but not reported the loss yet
+    /// @dev Once we've reported a loss, can unblock withdrawals
+    function toggleBlockWithdrawalsAfterLiquidation() external onlyManagement {
+        blockWithdrawalsAfterLiquidation = !blockWithdrawalsAfterLiquidation;
+    }
 
     /// @notice Set the buffer percentage for the auction starting price
     /// @param _auctionBufferPercentage Auction buffer percentage
@@ -210,9 +222,11 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
 
     /// @inheritdoc BaseLenderBorrower
     function availableWithdrawLimit(address /*_owner*/ ) public view override returns (uint256) {
-        if (TROVE_MANAGER.getTroveStatus(troveId) == ITroveManager.Status.closedByLiquidation) return 0;
+        if (
+            TROVE_MANAGER.getTroveStatus(troveId) == ITroveManager.Status.closedByLiquidation &&
+            blockWithdrawalsAfterLiquidation
+        ) return 0;
         return BaseLenderBorrower.availableWithdrawLimit(address(this));
-        
     }
 
     /// @inheritdoc BaseLenderBorrower
@@ -245,6 +259,12 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     // ===============================================================
 
     /// @inheritdoc BaseLenderBorrower
+    function _leveragePosition(uint256 _amount) internal override {
+        if (TROVE_MANAGER.getTroveStatus(troveId) != ITroveManager.Status.active) return;
+        BaseLenderBorrower._leveragePosition(_amount);
+    }
+
+    /// @inheritdoc BaseLenderBorrower
     function _deployFunds(uint256 _amount) internal override {
         if (
             TROVE_MANAGER.getTroveStatus(troveId) == ITroveManager.Status.active &&
@@ -273,14 +293,16 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     }
 
     /// @inheritdoc BaseLenderBorrower
+    /// @dev Calling this while trove is in zombie state might lead to stuck funds
     function _emergencyWithdraw(uint256 _amount) internal override {
         if (_amount > 0) _withdrawBorrowToken(Math.min(_amount, _lenderMaxWithdraw()));
 
-        // last one turns the lights off
-        BORROWER_OPERATIONS.closeTrove(troveId);
-
-        uint256 _balance = WETH.balanceOf(address(this));
-        if (_balance > 0) WETH.safeTransfer(msg.sender, _balance);
+        uint256 _troveId = troveId;
+        if (TROVE_MANAGER.getTroveStatus(_troveId) == ITroveManager.Status.active) {
+            BORROWER_OPERATIONS.closeTrove(_troveId);
+            uint256 _balance = WETH.balanceOf(address(this));
+            if (_balance > 0) WETH.safeTransfer(msg.sender, _balance);
+        }
     }
 
     /// @inheritdoc BaseLenderBorrower
