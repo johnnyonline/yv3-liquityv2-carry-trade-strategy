@@ -92,6 +92,9 @@ contract Setup is ExtendedTest, IEvents {
     uint256 private constant MIN_DEBT = 2_000 * 1e18;
 
     function setUp() public virtual {
+        uint256 _blockNumber = 22_212_717; // Caching for faster tests
+        vm.selectFork(vm.createFork(vm.envString("ETH_RPC_URL"), _blockNumber));
+
         _setTokenAddrs();
 
         // Set asset
@@ -308,7 +311,7 @@ contract Setup is ExtendedTest, IEvents {
         );
         require(
             uint8(ITroveManager(troveManager).getTroveStatus(strategy.troveId())) == uint8(ITroveManager.Status.zombie),
-            "Trove not active420"
+            "Trove not zombie"
         );
     }
 

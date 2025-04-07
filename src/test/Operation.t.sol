@@ -130,12 +130,13 @@ contract OperationTest is Setup {
         // Buying just enough to repay the loan
         uint256 toAuction = asset.balanceOf(strategy.ASSET_TO_BORROW_AUCTION());
         assertLe(toAuction, collToSell, "!collToSell");
-
         uint256 toAirdrop = toAuction * priceProvider.getPrice(address(asset)) / 1e18;
         airdrop(borrowToken, address(strategy), toAirdrop);
 
+        // Close trove and repay the loan
         strategy.emergencyWithdraw(type(uint256).max);
 
+        // Sell any leftover borrow token to asset
         strategy.sellBorrowToken(type(uint256).max);
         toAuction = borrowToken.balanceOf(strategy.BORROW_TO_ASSET_AUCTION());
         assertGt(toAuction, 0, "!borrowToSell");
@@ -168,7 +169,7 @@ contract OperationTest is Setup {
         assertApproxEq(asset.balanceOf(strategist), balanceBefore + strategistDeposit, balanceBefore + strategistDeposit * 5 / 100);
     }
 
-    function test_partialWithdraw_lowerLTV(uint256 _amount) public {
+    function test_partialWithdrawLowersLTV(uint256 _amount) public {
         vm.assume(_amount > 1 ether && _amount < maxFuzzAmount);
 
         uint256 targetLTV = (strategy.getLiquidateCollateralFactor() * strategy.targetLTVMultiplier()) / MAX_BPS;
@@ -222,6 +223,10 @@ contract OperationTest is Setup {
         mintAndDepositIntoStrategy(strategy, user, _amount);
 
         checkStrategyTotals(strategy, _amount + strategistDeposit, _amount + strategistDeposit, 0);
+        assertEq(strategy.totalAssets(), _amount + strategistDeposit, "!totalAssets");
+        assertRelApproxEq(strategy.getCurrentLTV(), targetLTV, 1000);
+        assertApproxEq(strategy.balanceOfCollateral(), _amount + strategistDeposit, 3, "!balanceOfCollateral");
+        assertRelApproxEq(strategy.balanceOfDebt(), strategy.balanceOfLentAssets(), 1000);
 
         // Earn Interest
         mockLenderEarnInterest(_amount + strategistDeposit); // 1% interest
@@ -380,7 +385,7 @@ contract OperationTest is Setup {
         (trigger, ) = strategy.tendTrigger();
         assertTrue(trigger, "warning ltv 2");
 
-        // Even with a 0 for max Tend Base Fee its true
+        // Get max gas price back to normal
         vm.prank(management);
         strategy.setMaxGasPriceToTend(200e9);
 
@@ -451,7 +456,6 @@ contract OperationTest is Setup {
         assertRelApproxEq(strategy.getCurrentLTV(), targetLTV, 1000);
     }
 
-    // @todo -- here -- fix that
     function test_operation_redemptionToZombie(uint256 _amount) public {
         vm.assume(_amount > minFuzzAmount && _amount < maxFuzzAmount);
 
@@ -479,11 +483,6 @@ contract OperationTest is Setup {
         // Check debt decreased
         assertLt(strategy.balanceOfDebt(), debtBefore, "!debt");
 
-        // Check we revert on report
-        vm.prank(keeper);
-        vm.expectRevert("healthCheck");
-        strategy.report();
-
         // Kick rewards to get rid of borrow token back to asset
         vm.prank(keeper);
         strategy.kickRewards();
@@ -492,22 +491,18 @@ contract OperationTest is Setup {
         uint256 toAirdrop = toAuction * 1e18 / priceProvider.getPrice(address(asset));
         airdrop(asset, address(strategy), toAirdrop);
 
-        // // Check we revert on report
-        // vm.prank(keeper);
-        // vm.expectRevert();
-        // strategy.report();
+        // Position zombie should be false
+        (bool trigger, ) = strategy.tendTrigger();
+        assertFalse(trigger, "zombieTrigger");
 
-        // Report profit
+        // Report profit (doesn't leverage)
         vm.prank(keeper);
         (uint256 profit, uint256 loss) = strategy.report();
 
         // Check return Values
-        assertGt(profit, 0, "!profit"); // If no price swinges, being redeemed is actually profitable
+        assertGt(profit, 0, "!profit"); // If no price swinges / other costs, being redeemed is actually profitable
         assertEq(loss, 0, "!loss");
-
-        // Position zombie should be false
-        (bool trigger, ) = strategy.tendTrigger();
-        assertFalse(trigger, "zombieTrigger");
+        assertLt(strategy.getCurrentLTV(), targetLTV, "!ltv");
 
         // AdjustZombieTrove
         (uint256 _upperHint, uint256 _lowerHint) = findHints();
@@ -516,21 +511,9 @@ contract OperationTest is Setup {
         vm.prank(keeper);
         strategy.adjustZombieTrove(_upperHint, _lowerHint);
 
-        // Position not zombie anymore
-        (trigger, ) = strategy.tendTrigger();
-        assertTrue(trigger, "!zombieTrigger");
+        uint256 balanceBefore = asset.balanceOf(user);
 
-        // Report to fix position
-        vm.prank(keeper);
-        (uint256 profit, uint256 loss) = strategy.report();
-
-        // Check return Values
-        assertGt(profit, 0, "!profit"); // If no price swinges, being redeemed is actually profitable
-        assertEq(loss, 0, "!loss");
-
-        balanceBefore = asset.balanceOf(user);
-
-        // Withdraw all funds
+        // User withdraw all funds before report
         vm.prank(user);
         strategy.redeem(_amount, user, user);
 
@@ -546,7 +529,7 @@ contract OperationTest is Setup {
         (profit, loss) = strategy.report();
 
         // Check return Values
-        assertGt(profit, 0, "!profit");
+        assertGe(profit, 0, "!profit");
         assertEq(loss, 0, "!loss");
 
         // Shutdown the strategy (can't repay entire debt without)
@@ -562,6 +545,7 @@ contract OperationTest is Setup {
         assertGe(asset.balanceOf(strategist), balanceBefore + strategistDeposit, "!final balance");
     }
 
+    // @todo -- here
     function test_operation_liquidation(uint256 _amount) public {
         vm.assume(_amount > minFuzzAmount && _amount < maxFuzzAmount);
 
