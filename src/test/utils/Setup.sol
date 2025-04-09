@@ -300,7 +300,7 @@ contract Setup is ExtendedTest, IEvents {
         vm.stopPrank();
     }
 
-    function simulateCollateralRedemption(uint256 _amount) internal {
+    function simulateCollateralRedemption(uint256 _amount, bool _zombie) internal {
         address _redeemer = address(420420);
         airdrop(borrowToken, _redeemer, _amount);
         vm.prank(_redeemer);
@@ -309,10 +309,17 @@ contract Setup is ExtendedTest, IEvents {
             0, // max iterations
             1_000_000_000_000_000_000 // max fee percentage
         );
-        require(
-            uint8(ITroveManager(troveManager).getTroveStatus(strategy.troveId())) == uint8(ITroveManager.Status.zombie),
-            "Trove not zombie"
-        );
+        if (_zombie) {
+            require(
+                uint8(ITroveManager(troveManager).getTroveStatus(strategy.troveId())) == uint8(ITroveManager.Status.zombie),
+                "Trove not zombie"
+            );
+        } else {
+            require(
+                uint8(ITroveManager(troveManager).getTroveStatus(strategy.troveId())) == uint8(ITroveManager.Status.active),
+                "Trove not active"
+            );
+        }
     }
 
     function simulateLiquidation() internal {
@@ -329,6 +336,8 @@ contract Setup is ExtendedTest, IEvents {
         );
         (,newAnswer,,,) = IPriceFeed(clEthUsdOracle).latestRoundData();
         assertEq(newAnswer, answer * 70 / 100, "!dump");
+        (bool trigger, ) = strategy.tendTrigger();
+        assertTrue(trigger, "liq");
         uint256[] memory troveArray = new uint256[](1);
         troveArray[0] = strategy.troveId();
         ITroveManager(troveManager).batchLiquidateTroves(troveArray);

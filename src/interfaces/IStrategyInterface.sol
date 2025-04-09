@@ -12,7 +12,7 @@ interface IStrategyInterface is ILenderBorrower {
     function PRICE_PROVIDER() external view returns (address);
     function BORROWER_OPERATIONS() external view returns (address);
     function TROVE_MANAGER() external view returns (address);
-    function toggleBlockWithdrawalsAfterLiquidation() external;
+    function unblockWithdrawalsAfterLiquidation() external;
     function setAuctionBufferPercentage(uint256 _auctionBufferPercentage) external;
     function openTrove(uint256 _upperHint, uint256 _lowerHint, address _sugardaddy) external;
     function claimCollateral() external;
