@@ -9,16 +9,23 @@ contract BoldOracle is IPriceFeed {
     // Constants
     // ============================================================================================
 
+    /// @notice The decimals difference between the Curve pool and the price feed
     uint256 private constant CL_DECIMALS_DIFF = 1e28;
+
+    /// @notice The heartbeat for the USDC/USD price feed
     uint256 private constant USDC_USD_CL_HEARTBEAT = 24 hours;
 
+    /// @notice The BOLD/USDC Curve pool
     ICurveStablePool public constant CURVE_POOL = ICurveStablePool(0xaDb6851875B7496E3D565B754d8a79508480a203);
+
+    /// @notice The USDC/USD Chainlink price feed
     IPriceFeed public constant USDC_USD_CL_PRICE_FEED = IPriceFeed(0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6);
 
     // ============================================================================================
     // Constructor
     // ============================================================================================
 
+    /// @notice Making sure the USDC/USD price feed has the expected decimals
     constructor() {
         // assuming this will always be true
         require(USDC_USD_CL_PRICE_FEED.decimals() == 8);

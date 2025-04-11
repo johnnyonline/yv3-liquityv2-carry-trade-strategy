@@ -36,7 +36,7 @@ contract PriceProvider is Ownable2Step {
     // Constructor
     // ===============================================================
 
-    /// @notice Constructor
+    /// @notice Initializing the Ownable2Step contract
     constructor() Ownable2Step() {}
 
     // ===============================================================

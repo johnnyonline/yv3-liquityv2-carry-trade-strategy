@@ -79,6 +79,12 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     // Constructor
     // ===============================================================
 
+    /// @param _asset Address of the asset
+    /// @param _name Name of the strategy
+    /// @param _borrowToken Address of the borrow token
+    /// @param _lenderVault Address of the lender vault
+    /// @param _addressesRegistry Address of the Liquity's addresses registry
+    /// @param _priceProvider Address of our price provider
     constructor(
         address _asset,
         string memory _name,
