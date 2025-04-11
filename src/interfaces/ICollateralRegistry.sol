@@ -2,5 +2,6 @@
 pragma solidity 0.8.23;
 
 interface ICollateralRegistry {
-    function redeemCollateral(uint256 _boldAmount, uint256 _maxIterationsPerCollateral, uint256 _maxFeePercentage) external;
+    function redeemCollateral(uint256 _boldAmount, uint256 _maxIterationsPerCollateral, uint256 _maxFeePercentage)
+        external;
 }

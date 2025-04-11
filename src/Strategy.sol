@@ -11,7 +11,6 @@ import {IPriceProvider} from "./interfaces/IPriceProvider.sol";
 
 import {BaseLenderBorrower, Math} from "./BaseLenderBorrower.sol";
 
-// @todo -- make dustThreshold configurable (more meaningful)
 contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     using SafeERC20 for ERC20;
 
@@ -28,6 +27,9 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     /// @notice Buffer percentage for the auction starting price
     uint256 public auctionBufferPercentage;
 
+    /// @notice Any amount below this will not be kicked
+    uint256 public minKickAmount;
+
     // ===============================================================
     // Constants
     // ===============================================================
@@ -37,6 +39,9 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
 
     /// @notice Minimum buffer percentage for the auction starting price
     uint256 private constant MIN_AUCTION_BUFFER_PERCENTAGE = WAD + 1e17; // 10%
+
+    /// @notice Minimum amount of borrow token to be kicked
+    uint256 private constant MIN_KICK_AMOUNT = 1e14;
 
     /// @notice Liquity's minimum amount of net Bold debt a trove must have
     ///         If a trove is redeeemed and the debt is less than this, it will be considered a zombie trove
@@ -83,17 +88,19 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
         address _priceProvider
     ) BaseLenderBorrower(_asset, _name, _borrowToken, _lenderVault) {
         ILiquityV2SPStrategy lenderVault_ = ILiquityV2SPStrategy(_lenderVault);
-        require(lenderVault_.COLL() == _asset && lenderVault_.asset() == _borrowToken, "!_lenderVault");
+        require(lenderVault_.COLL() == _asset && lenderVault_.asset() == _borrowToken, "!lenderVault");
 
         IAddressesRegistry addressesRegistry_ = IAddressesRegistry(_addressesRegistry);
         require(
             addressesRegistry_.collToken() == _asset && addressesRegistry_.boldToken() == _borrowToken,
-            "!_addressesRegistry"
+            "!addressesRegistry"
         );
 
         blockWithdrawalsAfterLiquidation = true;
         auctionBufferPercentage = MIN_AUCTION_BUFFER_PERCENTAGE;
+        minKickAmount = MIN_KICK_AMOUNT;
 
+        require(_priceProvider != address(0), "!priceProvider");
         PRICE_PROVIDER = IPriceProvider(_priceProvider);
 
         ASSET_TO_BORROW_AUCTION = AUCTION_FACTORY.createNewAuction(_borrowToken);
@@ -125,10 +132,17 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
         blockWithdrawalsAfterLiquidation = false;
     }
 
+    /// @notice Set the minimum amount of borrow token to be kicked
+    /// @param _minKickAmount Minimum amount of borrow token to be kicked
+    function setMinKickAmount(uint256 _minKickAmount) external onlyManagement {
+        require(_minKickAmount >= MIN_KICK_AMOUNT, "!kick");
+        minKickAmount = _minKickAmount;
+    }
+
     /// @notice Set the buffer percentage for the auction starting price
     /// @param _auctionBufferPercentage Auction buffer percentage
     function setAuctionBufferPercentage(uint256 _auctionBufferPercentage) external onlyManagement {
-        require(_auctionBufferPercentage >= MIN_AUCTION_BUFFER_PERCENTAGE, "buffer");
+        require(_auctionBufferPercentage >= MIN_AUCTION_BUFFER_PERCENTAGE, "!buffer");
         auctionBufferPercentage = _auctionBufferPercentage;
     }
 
@@ -138,11 +152,10 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     /// @dev Borrowing at the minimum interest rate because we don't mind getting redeeemed
     /// @param _upperHint Upper hint
     /// @param _lowerHint Lower hint
-    /// @param _sugardaddy ty sugardaddy
-    function openTrove(uint256 _upperHint, uint256 _lowerHint, address _sugardaddy) external onlyManagement {
+    function openTrove(uint256 _upperHint, uint256 _lowerHint) external onlyManagement {
         require(troveId == 0, "troveId");
         uint256 _collAmount = balanceOfAsset();
-        WETH.safeTransferFrom(_sugardaddy, address(this), ETH_GAS_COMPENSATION);
+        WETH.safeTransferFrom(msg.sender, address(this), ETH_GAS_COMPENSATION);
         troveId = BORROWER_OPERATIONS.openTrove(
             address(this), // owner
             block.timestamp, // ownerIndex
@@ -183,7 +196,7 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     function kickRewards() external onlyKeepers {
         uint256 _have = balanceOfLentAssets() + balanceOfBorrowToken();
         uint256 _owe = balanceOfDebt();
-        require(_have > _owe + DUST_THRESHOLD, "!rewards");
+        require(_have > _owe + minKickAmount, "!rewards");
         uint256 _extra = _have - _owe;
         _withdrawFromLender(_extra);
         _sellBorrowToken(Math.min(_extra, balanceOfBorrowToken()));
@@ -216,8 +229,8 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
     /// @inheritdoc BaseLenderBorrower
     function availableWithdrawLimit(address /*_owner*/ ) public view override returns (uint256) {
         if (
-            TROVE_MANAGER.getTroveStatus(troveId) == ITroveManager.Status.closedByLiquidation &&
-            blockWithdrawalsAfterLiquidation
+            TROVE_MANAGER.getTroveStatus(troveId) == ITroveManager.Status.closedByLiquidation
+                && blockWithdrawalsAfterLiquidation
         ) return 0;
         return BaseLenderBorrower.availableWithdrawLimit(address(this));
     }
@@ -259,7 +272,7 @@ contract LiquityV2CarryTradeStrategy is BaseLenderBorrower {
 
     /// @inheritdoc BaseLenderBorrower
     function _deployFunds(uint256 _amount) internal override {
-        if (_amount > DUST_THRESHOLD) _leveragePosition(_amount);
+        _leveragePosition(_amount);
     }
 
     /// @inheritdoc BaseLenderBorrower

@@ -24,10 +24,7 @@ interface ILenderBorrower is IBaseHealthCheck {
     // External Functions
     function setDepositLimit(uint256 _depositLimit) external;
 
-    function setLtvMultipliers(
-        uint16 _targetLTVMultiplier,
-        uint16 _warningLTVMultiplier
-    ) external;
+    function setLtvMultipliers(uint16 _targetLTVMultiplier, uint16 _warningLTVMultiplier) external;
 
     function setLeaveDebtBehind(bool _leaveDebtBehind) external;
 

@@ -42,8 +42,9 @@ contract StrategyFactory {
         address _priceProvider
     ) external virtual returns (address) {
         // tokenized strategies available setters.
-        IStrategyInterface _newStrategy =
-            IStrategyInterface(address(new Strategy(_asset, _name, _borrowToken, _lenderVault, _addressesRegistry, _priceProvider)));
+        IStrategyInterface _newStrategy = IStrategyInterface(
+            address(new Strategy(_asset, _name, _borrowToken, _lenderVault, _addressesRegistry, _priceProvider))
+        );
 
         _newStrategy.setPerformanceFeeRecipient(performanceFeeRecipient);
 

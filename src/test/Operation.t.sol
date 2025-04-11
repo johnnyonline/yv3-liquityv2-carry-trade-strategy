@@ -6,6 +6,7 @@ import {Setup, ERC20, IStrategyInterface} from "./utils/Setup.sol";
 
 contract OperationTest is Setup {
     error NotEnoughBoldBalance();
+
     function setUp() public virtual override {
         super.setUp();
     }
@@ -17,7 +18,69 @@ contract OperationTest is Setup {
         assertEq(strategy.management(), management);
         assertEq(strategy.performanceFeeRecipient(), performanceFeeRecipient);
         assertEq(strategy.keeper(), keeper);
-        // TODO: add additional check on strat params
+        assertTrue(strategy.blockWithdrawalsAfterLiquidation(), "!blockWithdrawalsAfterLiquidation");
+        assertEq(strategy.troveId(), 0, "!troveId");
+        assertEq(strategy.auctionBufferPercentage(), MIN_AUCTION_BUFFER_PERCENTAGE, "!auctionBufferPercentage");
+        assertEq(strategy.minKickAmount(), MIN_KICK_AMOUNT, "!minKickAmount");
+        assertTrue(strategy.ASSET_TO_BORROW_AUCTION() != address(0), "!ASSET_TO_BORROW_AUCTION");
+        assertTrue(strategy.BORROW_TO_ASSET_AUCTION() != address(0), "!BORROW_TO_ASSET_AUCTION");
+        assertEq(strategy.PRICE_PROVIDER(), address(priceProvider), "!priceProvider");
+        assertEq(strategy.BORROWER_OPERATIONS(), address(borrowerOperations), "!borrowerOperations");
+        assertEq(strategy.TROVE_MANAGER(), address(troveManager), "!troveManager");
+        assertTrue(strategy.leaveDebtBehind(), "!leaveDebtBehind");
+    }
+
+    function test_setupStrategyOK_afterOpenTrove(uint256 _delta) public {
+        strategistDepositAndOpenTrove(true);
+
+        assertTrue(strategy.troveId() != 0, "!troveId");
+        assertEq(ERC20(tokenAddrs["WETH"]).balanceOf(address(strategy)), 0, "!wethBalance");
+        assertEq(strategy.getNetBorrowApr(_delta), MIN_ANNUAL_INTEREST_RATE, "!getNetBorrowApr");
+        assertGt(strategy.getNetRewardApr(_delta), strategy.getNetBorrowApr(_delta), "!getNetRewardApr");
+        assertEq(strategy.getLiquidateCollateralFactor(), liquidateCollateralFactor, "!getLiquidateCollateralFactor");
+        assertApproxEq(strategy.balanceOfDebt(), MIN_DEBT, 1e18, "!balanceOfDebt");
+    }
+
+    function test_invalidDeployment() public {
+        vm.expectRevert("!lenderVault");
+        strategyFactory.newStrategy(
+            tokenAddrs["LINK"],
+            "Tokenized Strategy",
+            address(borrowToken),
+            address(lenderVault),
+            address(addressesRegistry),
+            address(priceProvider)
+        );
+
+        vm.expectRevert("!lenderVault");
+        strategyFactory.newStrategy(
+            address(asset),
+            "Tokenized Strategy",
+            address(0),
+            address(lenderVault),
+            address(addressesRegistry),
+            address(priceProvider)
+        );
+
+        vm.expectRevert("!addressesRegistry");
+        strategyFactory.newStrategy(
+            address(asset),
+            "Tokenized Strategy",
+            address(borrowToken),
+            address(lenderVault),
+            address(0x3b48169809DD827F22C9e0F2d71ff12Ea7A94a2F), // rETH addressesRegistry
+            address(priceProvider)
+        );
+
+        vm.expectRevert("!priceProvider");
+        strategyFactory.newStrategy(
+            address(asset),
+            "Tokenized Strategy",
+            address(borrowToken),
+            address(lenderVault),
+            address(addressesRegistry),
+            address(0)
+        );
     }
 
     function test_operation(uint256 _amount) public {
@@ -151,11 +214,7 @@ contract OperationTest is Setup {
         vm.prank(user);
         strategy.redeem(_amount, user, user);
 
-        assertLt(
-            asset.balanceOf(user),
-            balanceBefore + _amount,
-            "!final balance"
-        );
+        assertLt(asset.balanceOf(user), balanceBefore + _amount, "!final balance");
 
         // 5% loss max
         assertApproxEq(asset.balanceOf(user), balanceBefore + _amount, balanceBefore + _amount * 5 / 100);
@@ -166,7 +225,9 @@ contract OperationTest is Setup {
         assertLt(asset.balanceOf(strategist), balanceBefore + strategistDeposit, "!final balance");
 
         // 5% loss max, same as user
-        assertApproxEq(asset.balanceOf(strategist), balanceBefore + strategistDeposit, balanceBefore + strategistDeposit * 5 / 100);
+        assertApproxEq(
+            asset.balanceOf(strategist), balanceBefore + strategistDeposit, balanceBefore + strategistDeposit * 5 / 100
+        );
     }
 
     function test_partialWithdrawLowersLTV(uint256 _amount) public {
@@ -204,11 +265,7 @@ contract OperationTest is Setup {
         vm.prank(user);
         strategy.redeem(_amount / 2, user, user, 1);
 
-        assertGe(
-            asset.balanceOf(user),
-            ((balanceBefore + (_amount / 2)) * 9_999) / MAX_BPS,
-            "!final balance"
-        );
+        assertGe(asset.balanceOf(user), ((balanceBefore + (_amount / 2)) * 9_999) / MAX_BPS, "!final balance");
     }
 
     function test_profitableReport(uint256 _amount) public {
@@ -251,6 +308,7 @@ contract OperationTest is Setup {
         assertEq(loss, 0, "!loss");
 
         skip(1 hours); // not waiting for full unlock bc of oracles
+        freezeOracles();
 
         uint256 balanceBefore = asset.balanceOf(user);
 
@@ -258,11 +316,7 @@ contract OperationTest is Setup {
         vm.prank(user);
         strategy.redeem(_amount, user, user);
 
-        assertGt(
-            asset.balanceOf(user),
-            balanceBefore + _amount,
-            "!final balance"
-        );
+        assertGt(asset.balanceOf(user), balanceBefore + _amount, "!final balance");
 
         assertRelApproxEq(strategy.getCurrentLTV(), targetLTV, 1000);
 
@@ -315,6 +369,7 @@ contract OperationTest is Setup {
         assertEq(loss, 0, "!loss");
 
         skip(1 hours); // not waiting for full unlock bc of oracles
+        freezeOracles();
 
         // Get the expected fee
         uint256 expectedShares = (profit * 1_000) / MAX_BPS;
@@ -352,13 +407,13 @@ contract OperationTest is Setup {
         assertGt(asset.balanceOf(strategist), balanceBefore + strategistDeposit, "!final balance");
     }
 
-     function test_tendTrigger(uint256 _amount) public {
+    function test_tendTrigger(uint256 _amount) public {
         vm.assume(_amount > 1 ether && _amount < maxFuzzAmount); // increase min fuzz bc of minDebt requirement
 
         uint256 targetLTV = (strategy.getLiquidateCollateralFactor() * strategy.targetLTVMultiplier()) / MAX_BPS;
 
         // No assets should be false.
-        (bool trigger, ) = strategy.tendTrigger();
+        (bool trigger,) = strategy.tendTrigger();
         assertTrue(!trigger);
 
         // Strategist makes initial deposit and opens a trove
@@ -367,7 +422,7 @@ contract OperationTest is Setup {
         // Deposit into strategy
         mintAndDepositIntoStrategy(strategy, user, _amount);
 
-        (trigger, ) = strategy.tendTrigger();
+        (trigger,) = strategy.tendTrigger();
         assertTrue(!trigger);
 
         // Withdrawl some collateral to pump LTV
@@ -375,14 +430,14 @@ contract OperationTest is Setup {
         vm.prank(emergencyAdmin);
         strategy.manualWithdraw(address(0), collToSell);
 
-        (trigger, ) = strategy.tendTrigger();
+        (trigger,) = strategy.tendTrigger();
         assertTrue(trigger, "warning ltv");
 
         // Even with a 0 for max Tend Base Fee its true
         vm.prank(management);
         strategy.setMaxGasPriceToTend(0);
 
-        (trigger, ) = strategy.tendTrigger();
+        (trigger,) = strategy.tendTrigger();
         assertTrue(trigger, "warning ltv 2");
 
         // Get max gas price back to normal
@@ -392,7 +447,7 @@ contract OperationTest is Setup {
         vm.prank(keeper);
         strategy.tend();
 
-        (trigger, ) = strategy.tendTrigger();
+        (trigger,) = strategy.tendTrigger();
         assertTrue(!trigger, "post tend");
 
         // Earn Interest
@@ -410,19 +465,19 @@ contract OperationTest is Setup {
 
         assertLt(strategy.getCurrentLTV(), targetLTV);
 
-        (trigger, ) = strategy.tendTrigger();
+        (trigger,) = strategy.tendTrigger();
         assertTrue(trigger);
 
         vm.prank(keeper);
         strategy.tend();
 
-        (trigger, ) = strategy.tendTrigger();
+        (trigger,) = strategy.tendTrigger();
         assertTrue(!trigger);
 
         vm.prank(user);
         strategy.redeem(_amount, user, user);
 
-        (trigger, ) = strategy.tendTrigger();
+        (trigger,) = strategy.tendTrigger();
         assertTrue(!trigger);
     }
 
@@ -492,7 +547,7 @@ contract OperationTest is Setup {
         airdrop(asset, address(strategy), toAirdrop);
 
         // Position zombie should be false
-        (bool trigger, ) = strategy.tendTrigger();
+        (bool trigger,) = strategy.tendTrigger();
         assertFalse(trigger, "zombieTrigger");
 
         // Report profit (doesn't leverage)
@@ -582,7 +637,7 @@ contract OperationTest is Setup {
         airdrop(asset, address(strategy), toAirdrop);
 
         // Position not zombie should be true
-        (bool trigger, ) = strategy.tendTrigger();
+        (bool trigger,) = strategy.tendTrigger();
         assertTrue(trigger, "!zombieTrigger");
 
         // Report profit
@@ -666,7 +721,7 @@ contract OperationTest is Setup {
         airdrop(asset, address(strategy), toAirdrop * 80 / 100); // 20% loss
 
         // Position zombie should be false
-        (bool trigger, ) = strategy.tendTrigger();
+        (bool trigger,) = strategy.tendTrigger();
         assertFalse(trigger, "zombieTrigger");
 
         // User can withdraw before loss is reported
@@ -760,7 +815,7 @@ contract OperationTest is Setup {
         airdrop(asset, address(strategy), toAirdrop * 80 / 100); // 20% loss
 
         // Position not zombie should be true
-        (bool trigger, ) = strategy.tendTrigger();
+        (bool trigger,) = strategy.tendTrigger();
         assertTrue(trigger, "!zombieTrigger");
 
         // User can withdraw before loss is reported
@@ -832,7 +887,7 @@ contract OperationTest is Setup {
         assertApproxEq(strategy.balanceOfCollateral(), _amount + strategistDeposit, 3, "!balanceOfCollateral");
         assertRelApproxEq(strategy.balanceOfDebt(), strategy.balanceOfLentAssets(), 1000);
 
-        (bool trigger, ) = strategy.tendTrigger();
+        (bool trigger,) = strategy.tendTrigger();
         assertFalse(trigger, "!liq");
 
         // Simulate a liquidation
@@ -870,7 +925,7 @@ contract OperationTest is Setup {
         // Make sure can't open a new trove
         vm.prank(management);
         vm.expectRevert("troveId");
-        strategy.openTrove(0, 0, address(0));
+        strategy.openTrove(0, 0);
 
         // Allow for loss
         vm.prank(management);

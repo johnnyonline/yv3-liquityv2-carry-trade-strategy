@@ -30,7 +30,6 @@ interface IFactory {
 }
 
 contract Setup is ExtendedTest, IEvents {
-
     // Fork contracts
     // liquity v2.1 WETH
     address public collateralRegistry = 0xd99dE73b95236F69A559117ECD6F519Af780F3f7;
@@ -40,15 +39,13 @@ contract Setup is ExtendedTest, IEvents {
     address public hintHelpers = 0xe3BB97EE79aC4BdFc0c30A95aD82c243c9913aDa;
     address public sortedTroves = 0x879474Cfbb980fB6899aaaA9b5D5EE14fFbF85A9;
     uint256 public branchIndex = 0;
+    uint256 public liquidateCollateralFactor = 909090909090909090;
     //
     address public clEthUsdOracle = 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419;
     address public clUsdcUsdOracle = 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6;
 
-    // @todo -- use mockcall to clean this
-    // uint256 public clEthUsdOracleHeartbeat = 1 hours;
-    // uint256 public clUsdcUsdOracleHeartbeat = 24 hours;
-    uint256 public clEthUsdOracleHeartbeat = 100 days;
-    uint256 public clUsdcUsdOracleHeartbeat = 100 days;
+    uint256 public clEthUsdOracleHeartbeat = 1 hours;
+    uint256 public clUsdcUsdOracleHeartbeat = 24 hours;
 
     // Contract instances that we will use repeatedly.
     ERC20 public borrowToken;
@@ -88,8 +85,10 @@ contract Setup is ExtendedTest, IEvents {
 
     // Constants from the Strategy
     uint256 public constant ETH_GAS_COMPENSATION = 0.0375 ether;
-    uint256 private constant MIN_ANNUAL_INTEREST_RATE = 1e18 / 100 / 2; // 0.5%
-    uint256 private constant MIN_DEBT = 2_000 * 1e18;
+    uint256 public constant MIN_ANNUAL_INTEREST_RATE = 1e18 / 100 / 2; // 0.5%
+    uint256 public constant MIN_DEBT = 2_000 * 1e18;
+    uint256 public constant MIN_AUCTION_BUFFER_PERCENTAGE = 1e18 + 1e17; // 10%
+    uint256 public constant MIN_KICK_AMOUNT = 1e14;
 
     function setUp() public virtual {
         uint256 _blockNumber = 22_212_717; // Caching for faster tests
@@ -117,6 +116,8 @@ contract Setup is ExtendedTest, IEvents {
         factory = strategy.FACTORY();
 
         _lowerTCR(); // add lots of collateral and borrow almost nothing to lower the Trove Collateral Ratio
+
+        freezeOracles(); // freeze timestamp to avoid staleness issues
 
         // label all the used addresses for traces
         vm.label(keeper, "keeper");
@@ -147,11 +148,10 @@ contract Setup is ExtendedTest, IEvents {
         vm.prank(management);
         _strategy.acceptManagement();
 
+        setUpPriceProvider();
         priceProvider.transferOwnership(management);
         vm.prank(management);
         priceProvider.acceptOwnership();
-
-        setUpPriceProvider();
 
         return address(_strategy);
     }
@@ -161,14 +161,14 @@ contract Setup is ExtendedTest, IEvents {
         if (_strategistDeposit) mintAndDepositIntoStrategy(strategy, strategist, initialStrategistDeposit);
 
         // Approve gas compensation spending
-        airdrop(ERC20(tokenAddrs["WETH"]), strategist, ETH_GAS_COMPENSATION);
-        vm.prank(strategist);
+        airdrop(ERC20(tokenAddrs["WETH"]), management, ETH_GAS_COMPENSATION);
+        vm.prank(management);
         ERC20(tokenAddrs["WETH"]).approve(address(strategy), ETH_GAS_COMPENSATION);
 
         // Open Trove
         (uint256 _upperHint, uint256 _lowerHint) = findHints();
         vm.prank(management);
-        strategy.openTrove(_upperHint, _lowerHint, strategist);
+        strategy.openTrove(_upperHint, _lowerHint);
 
         return initialStrategistDeposit;
     }
@@ -230,11 +230,25 @@ contract Setup is ExtendedTest, IEvents {
         strategy.setPerformanceFee(_performanceFee);
     }
 
+    function freezeOracles() public {
+        (uint80 roundId, int256 answer, uint256 startedAt,, uint80 answeredInRound) = IPriceFeed(clEthUsdOracle).latestRoundData();
+        vm.mockCall(
+            clEthUsdOracle,
+            abi.encodeWithSelector(IPriceFeed.latestRoundData.selector),
+            abi.encode(roundId, answer, startedAt, block.timestamp, answeredInRound)
+        );
+
+        (roundId, answer, startedAt,, answeredInRound) = IPriceFeed(clUsdcUsdOracle).latestRoundData();
+        vm.mockCall(
+            clUsdcUsdOracle,
+            abi.encodeWithSelector(IPriceFeed.latestRoundData.selector),
+            abi.encode(roundId, answer, startedAt, block.timestamp, answeredInRound)
+        );
+    }
+
     function setUpPriceProvider() public {
-        vm.startPrank(management);
         priceProvider.setAssetInfo(clEthUsdOracleHeartbeat, address(asset), clEthUsdOracle);
-        priceProvider.setAssetInfo(clUsdcUsdOracleHeartbeat, address(borrowToken), clUsdcUsdOracle); // @todo - oracle that always returns 1
-        vm.stopPrank();
+        priceProvider.setAssetInfo(clUsdcUsdOracleHeartbeat, address(borrowToken), clUsdcUsdOracle); // @todo - oracle that always returns 1 (?)
     }
 
     function _setTokenAddrs() internal {
@@ -258,7 +272,8 @@ contract Setup is ExtendedTest, IEvents {
         });
 
         // Find concrete insert position (off-chain)
-        (_upperHint, _lowerHint) = ISortedTroves(sortedTroves).findInsertPosition(MIN_ANNUAL_INTEREST_RATE, _approxHint, _approxHint);
+        (_upperHint, _lowerHint) =
+            ISortedTroves(sortedTroves).findInsertPosition(MIN_ANNUAL_INTEREST_RATE, _approxHint, _approxHint);
     }
 
     function sqrt(uint256 y) private pure returns (uint256 z) {
@@ -311,12 +326,14 @@ contract Setup is ExtendedTest, IEvents {
         );
         if (_zombie) {
             require(
-                uint8(ITroveManager(troveManager).getTroveStatus(strategy.troveId())) == uint8(ITroveManager.Status.zombie),
+                uint8(ITroveManager(troveManager).getTroveStatus(strategy.troveId()))
+                    == uint8(ITroveManager.Status.zombie),
                 "Trove not zombie"
             );
         } else {
             require(
-                uint8(ITroveManager(troveManager).getTroveStatus(strategy.troveId())) == uint8(ITroveManager.Status.active),
+                uint8(ITroveManager(troveManager).getTroveStatus(strategy.troveId()))
+                    == uint8(ITroveManager.Status.active),
                 "Trove not active"
             );
         }
@@ -327,22 +344,24 @@ contract Setup is ExtendedTest, IEvents {
             uint8(ITroveManager(troveManager).getTroveStatus(strategy.troveId())) == uint8(ITroveManager.Status.active),
             "Trove not active"
         );
-        (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound) = IPriceFeed(clEthUsdOracle).latestRoundData();
+        (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound) =
+            IPriceFeed(clEthUsdOracle).latestRoundData();
         int256 newAnswer = answer * 70 / 100; // 30% drop
         vm.mockCall(
             clEthUsdOracle,
             abi.encodeWithSelector(IPriceFeed.latestRoundData.selector),
             abi.encode(roundId, newAnswer, startedAt, updatedAt, answeredInRound)
         );
-        (,newAnswer,,,) = IPriceFeed(clEthUsdOracle).latestRoundData();
+        (, newAnswer,,,) = IPriceFeed(clEthUsdOracle).latestRoundData();
         assertEq(newAnswer, answer * 70 / 100, "!dump");
-        (bool trigger, ) = strategy.tendTrigger();
+        (bool trigger,) = strategy.tendTrigger();
         assertTrue(trigger, "liq");
         uint256[] memory troveArray = new uint256[](1);
         troveArray[0] = strategy.troveId();
         ITroveManager(troveManager).batchLiquidateTroves(troveArray);
         require(
-            uint8(ITroveManager(troveManager).getTroveStatus(strategy.troveId())) == uint8(ITroveManager.Status.closedByLiquidation),
+            uint8(ITroveManager(troveManager).getTroveStatus(strategy.troveId()))
+                == uint8(ITroveManager.Status.closedByLiquidation),
             "Trove not liquidated"
         );
     }

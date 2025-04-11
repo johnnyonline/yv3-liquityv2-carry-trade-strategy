@@ -22,5 +22,14 @@ interface IBorrowerOperations {
     function withdrawBold(uint256 _troveId, uint256 _amount, uint256 _maxFee) external;
     function closeTrove(uint256 _troveId) external;
     function claimCollateral() external;
-    function adjustZombieTrove(uint256 _troveId, uint256 _collChange, bool _isCollIncrease, uint256 _boldChange, bool _isDebtIncrease, uint256 _upperHint, uint256 _lowerHint, uint256 _maxUpfrontFee) external;
+    function adjustZombieTrove(
+        uint256 _troveId,
+        uint256 _collChange,
+        bool _isCollIncrease,
+        uint256 _boldChange,
+        bool _isDebtIncrease,
+        uint256 _upperHint,
+        uint256 _lowerHint,
+        uint256 _maxUpfrontFee
+    ) external;
 }

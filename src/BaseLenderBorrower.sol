@@ -41,6 +41,7 @@ abstract contract BaseLenderBorrower is BaseHealthCheck {
     uint256 public maxGasPriceToTend;
 
     /// Thresholds: lower limit on how much base token can be borrowed at a time.
+    // slither-disable-next-line uninitialized-state
     uint256 internal minAmountToBorrow;
 
     /// The lender vault that will be used to lend and borrow.
