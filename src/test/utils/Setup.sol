@@ -8,6 +8,7 @@ import {IStrategy} from "@tokenized-strategy/interfaces/IStrategy.sol";
 import {PriceProvider} from "../../PriceProvider.sol";
 import {LiquityV2CarryTradeStrategy as Strategy, ERC20} from "../../Strategy.sol";
 import {StrategyFactory} from "../../StrategyFactory.sol";
+import {BoldOracle} from "../../periphery/BoldOracle.sol";
 import {IStrategyInterface} from "../../interfaces/IStrategyInterface.sol";
 import {IHintHelpers} from "../../interfaces/IHintHelpers.sol";
 import {ITroveManager} from "../../interfaces/ITroveManager.sol";
@@ -53,6 +54,7 @@ contract Setup is ExtendedTest, IEvents {
     IStrategy public lenderVault;
     IStrategyInterface public strategy;
     PriceProvider public priceProvider;
+    BoldOracle public boldOracle;
 
     StrategyFactory public strategyFactory;
 
@@ -130,6 +132,7 @@ contract Setup is ExtendedTest, IEvents {
 
     function setUpStrategy() public returns (address) {
         priceProvider = new PriceProvider();
+        boldOracle = new BoldOracle();
 
         // we save the strategy as a IStrategyInterface to give it the needed interface
         IStrategyInterface _strategy = IStrategyInterface(
@@ -231,7 +234,8 @@ contract Setup is ExtendedTest, IEvents {
     }
 
     function freezeOracles() public {
-        (uint80 roundId, int256 answer, uint256 startedAt,, uint80 answeredInRound) = IPriceFeed(clEthUsdOracle).latestRoundData();
+        (uint80 roundId, int256 answer, uint256 startedAt,, uint80 answeredInRound) =
+            IPriceFeed(clEthUsdOracle).latestRoundData();
         vm.mockCall(
             clEthUsdOracle,
             abi.encodeWithSelector(IPriceFeed.latestRoundData.selector),
@@ -248,7 +252,7 @@ contract Setup is ExtendedTest, IEvents {
 
     function setUpPriceProvider() public {
         priceProvider.setAssetInfo(clEthUsdOracleHeartbeat, address(asset), clEthUsdOracle);
-        priceProvider.setAssetInfo(clUsdcUsdOracleHeartbeat, address(borrowToken), clUsdcUsdOracle); // @todo - oracle that always returns 1 (?)
+        priceProvider.setAssetInfo(clUsdcUsdOracleHeartbeat, address(borrowToken), address(boldOracle));
     }
 
     function _setTokenAddrs() internal {
