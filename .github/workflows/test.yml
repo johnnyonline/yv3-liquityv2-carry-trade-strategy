@@ -9,6 +9,7 @@ on:
 
 env:
   FOUNDRY_PROFILE: ci
+  ETH_RPC_URL: ${{ secrets.ETH_RPC_URL }}
 
 jobs:
   test:
@@ -26,6 +27,9 @@ jobs:
         uses: foundry-rs/foundry-toolchain@v1
         with:
           version: nightly
+
+      - name: Create .env file
+        run: echo "ETH_RPC_URL=${{ secrets.ETH_RPC_URL }}" > .env
 
       # - name: Run Forge build
       #   run: |
